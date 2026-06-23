@@ -1,22 +1,29 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: TradeUpdate API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication
+  - name: user
+    description: User operations
+  - name: admin
+    description: Admin operations
+  - name: public
+    description: Public endpoints
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +31,2097 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /public/stats:
+    get:
+      operationId: getPublicStats
+      tags: [public]
+      summary: Get public platform statistics
+      responses:
+        "200":
+          description: Platform stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicStats"
+
+  /auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Submit signup request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupInput"
+      responses:
+        "200":
+          description: Signup submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthLoginData"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Account not approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthLoginStatus"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentUser"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/change-password:
+    post:
+      operationId: changePassword
+      tags: [auth]
+      summary: Change password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordInput"
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /user/dashboard:
+    get:
+      operationId: getUserDashboard
+      tags: [user]
+      summary: Get user dashboard data
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDashboard"
+
+  /user/trades:
+    get:
+      operationId: getUserTrades
+      tags: [user]
+      summary: Get user trade history
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+            enum: [all, win, loss, paper, copy]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Trade history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradeListResponse"
+
+  /user/signals:
+    get:
+      operationId: getUserSignals
+      tags: [user]
+      summary: Get signal log
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Signal log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignalListResponse"
+
+  /user/stats:
+    get:
+      operationId: getUserStats
+      tags: [user]
+      summary: Get user analytics and statistics
+      responses:
+        "200":
+          description: User statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserStats"
+
+  /user/bot/status:
+    get:
+      operationId: getBotStatus
+      tags: [user]
+      summary: Get bot status
+      responses:
+        "200":
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /user/bot/toggle:
+    post:
+      operationId: toggleBot
+      tags: [user]
+      summary: Start or stop bot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BotToggleInput"
+      responses:
+        "200":
+          description: Bot toggled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /user/bot/kill:
+    post:
+      operationId: killBot
+      tags: [user]
+      summary: Activate kill switch
+      responses:
+        "200":
+          description: Kill switch activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /user/bot/reset-kill:
+    post:
+      operationId: resetKillSwitch
+      tags: [user]
+      summary: Reset kill switch
+      responses:
+        "200":
+          description: Kill switch reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /user/settings/token:
+    post:
+      operationId: saveDerivToken
+      tags: [user]
+      summary: Save Deriv API token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DerivTokenInput"
+      responses:
+        "200":
+          description: Token saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DerivConnectionResult"
+
+  /user/settings/profile:
+    post:
+      operationId: updateTradingProfile
+      tags: [user]
+      summary: Update trading profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TradingProfileInput"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /user/settings/compound-toggle:
+    post:
+      operationId: toggleAutoCompound
+      tags: [user]
+      summary: Toggle auto-compound setting
+      responses:
+        "200":
+          description: Setting toggled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingToggleResponse"
+
+  /user/settings/adaptive-toggle:
+    post:
+      operationId: toggleAdaptiveIntelligence
+      tags: [user]
+      summary: Toggle adaptive intelligence
+      responses:
+        "200":
+          description: Setting toggled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingToggleResponse"
+
+  /user/chart/candles:
+    get:
+      operationId: getCandles
+      tags: [user]
+      summary: Get candlestick data
+      parameters:
+        - name: timeframe
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: ["1m", "5m", "15m"]
+        - name: count
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Candle data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandleListResponse"
+
+  /user/tick:
+    get:
+      operationId: getLatestTick
+      tags: [user]
+      summary: Get latest R_75 tick price
+      responses:
+        "200":
+          description: Latest tick
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TickResponse"
+
+  /admin/overview:
+    get:
+      operationId: getAdminOverview
+      tags: [admin]
+      summary: Admin overview statistics
+      responses:
+        "200":
+          description: Overview data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOverview"
+
+  /admin/users:
+    get:
+      operationId: getAdminUsers
+      tags: [admin]
+      summary: List all users
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserListResponse"
+
+  /admin/users/create:
+    post:
+      operationId: adminCreateUser
+      tags: [admin]
+      summary: Create a user directly
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminCreateUserInput"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminCreatedUser"
+
+  /admin/users/{userId}:
+    patch:
+      operationId: adminUpdateUser
+      tags: [admin]
+      summary: Update user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUserUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    delete:
+      operationId: adminDeleteUser
+      tags: [admin]
+      summary: Delete user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/users/{userId}/dashboard:
+    get:
+      operationId: adminGetUserDashboard
+      tags: [admin]
+      summary: View user dashboard as admin
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDashboard"
+
+  /admin/signups:
+    get:
+      operationId: getPendingSignups
+      tags: [admin]
+      summary: Get pending signups
+      responses:
+        "200":
+          description: Pending signups
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingSignupListResponse"
+
+  /admin/signups/approve/{signupId}:
+    post:
+      operationId: approveSignup
+      tags: [admin]
+      summary: Approve signup
+      parameters:
+        - name: signupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/signups/reject/{signupId}:
+    post:
+      operationId: rejectSignup
+      tags: [admin]
+      summary: Reject signup
+      parameters:
+        - name: signupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/profiles:
+    get:
+      operationId: getTradingProfiles
+      tags: [admin]
+      summary: Get trading profiles
+      responses:
+        "200":
+          description: Trading profiles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradingProfileListResponse"
+
+  /admin/profiles/{profile}:
+    patch:
+      operationId: updateTradingProfileAdmin
+      tags: [admin]
+      summary: Update trading profile configuration
+      parameters:
+        - name: profile
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TradingProfileConfigUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/strategies:
+    get:
+      operationId: getStrategies
+      tags: [admin]
+      summary: Get all strategies
+      responses:
+        "200":
+          description: Strategies
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyListResponse"
+
+  /admin/strategies/create:
+    post:
+      operationId: createStrategy
+      tags: [admin]
+      summary: Create strategy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Strategy"
+
+  /admin/strategies/{strategyId}:
+    patch:
+      operationId: updateStrategy
+      tags: [admin]
+      summary: Update strategy
+      parameters:
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    delete:
+      operationId: deleteStrategy
+      tags: [admin]
+      summary: Delete strategy
+      parameters:
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/strategies/{strategyId}/assign/{userId}:
+    post:
+      operationId: assignStrategy
+      tags: [admin]
+      summary: Assign strategy to user
+      parameters:
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/strategies/{strategyId}/pause:
+    post:
+      operationId: pauseStrategy
+      tags: [admin]
+      summary: Pause strategy
+      parameters:
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/strategies/{strategyId}/reactivate:
+    post:
+      operationId: reactivateStrategy
+      tags: [admin]
+      summary: Reactivate strategy
+      parameters:
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Reactivated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/strategies/{strategyId}/performance:
+    get:
+      operationId: getStrategyPerformance
+      tags: [admin]
+      summary: Get strategy performance data
+      parameters:
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Performance data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyPerformanceData"
+
+  /admin/copy-trade/preview:
+    post:
+      operationId: previewCopyTrade
+      tags: [admin]
+      summary: Preview copy trade before executing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CopyTradeInput"
+      responses:
+        "200":
+          description: Copy trade preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopyTradePreview"
+
+  /admin/copy-trade/execute:
+    post:
+      operationId: executeCopyTrade
+      tags: [admin]
+      summary: Execute copy trade
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CopyTradeInput"
+      responses:
+        "200":
+          description: Copy trade executed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/copy-trade/history:
+    get:
+      operationId: getCopyTradeHistory
+      tags: [admin]
+      summary: Get copy trade history
+      responses:
+        "200":
+          description: Copy trade history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopyTradeHistoryResponse"
+
+  /admin/backtest/run:
+    post:
+      operationId: runBacktest
+      tags: [admin]
+      summary: Run a backtest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BacktestInput"
+      responses:
+        "200":
+          description: Backtest results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BacktestResult"
+
+  /admin/backtest/results:
+    get:
+      operationId: getBacktestResults
+      tags: [admin]
+      summary: Get all backtest results
+      responses:
+        "200":
+          description: Backtest results list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BacktestResultListResponse"
+
+  /admin/settings:
+    get:
+      operationId: getSystemSettings
+      tags: [admin]
+      summary: Get system settings
+      responses:
+        "200":
+          description: System settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemSettings"
+
+  /admin/settings/master-stop:
+    post:
+      operationId: setMasterStop
+      tags: [admin]
+      summary: Toggle master stop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MasterStopInput"
+      responses:
+        "200":
+          description: Master stop updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /admin/logs:
+    get:
+      operationId: getAuthLogs
+      tags: [admin]
+      summary: Get auth and activity logs
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Auth logs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthLogListResponse"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        success:
+          type: boolean
+
+    PublicStats:
+      type: object
+      required: [totalTrades, avgWinRate, strategiesCount, uptime]
+      properties:
+        totalTrades:
+          type: integer
+        avgWinRate:
+          type: number
+        strategiesCount:
+          type: integer
+        uptime:
+          type: number
+
+    SignupInput:
+      type: object
+      required: [username, email, country, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 20
+        email:
+          type: string
+          format: email
+        country:
+          type: string
+        password:
+          type: string
+          minLength: 8
+
+    LoginInput:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    AuthLoginData:
+      type: object
+      required: [role, username]
+      properties:
+        role:
+          type: string
+        username:
+          type: string
+        mustChangePassword:
+          type: boolean
+        hasProfile:
+          type: boolean
+        hasToken:
+          type: boolean
+
+    AuthLoginStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+
+    CurrentUser:
+      type: object
+      required: [id, username, role, status]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+        status:
+          type: string
+        email:
+          type: string
+        tradingProfile:
+          type: ["string", "null"]
+        strategyId:
+          type: ["string", "null"]
+        accountBalance:
+          type: number
+        peakBalance:
+          type: number
+        dailyStartBalance:
+          type: number
+        autoCompoundEnabled:
+          type: boolean
+        adaptiveIntelligenceEnabled:
+          type: boolean
+        copyTradingEnabled:
+          type: boolean
+        mustChangePassword:
+          type: boolean
+        hasDerivToken:
+          type: boolean
+        tradingMode:
+          type: ["string", "null"]
+
+    ChangePasswordInput:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+
+    UserDashboard:
+      type: object
+      required: [user, botStatus, recentTrades, sessionPerformance]
+      properties:
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+        botStatus:
+          $ref: "#/components/schemas/BotStatus"
+        recentTrades:
+          type: array
+          items:
+            $ref: "#/components/schemas/Trade"
+        sessionPerformance:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionSummary"
+        dailyPnl:
+          type: number
+        todayTrades:
+          type: integer
+        winStreak:
+          type: integer
+        lossStreak:
+          type: integer
+
+    BotStatus:
+      type: object
+      required: [isRunning, killSwitchActive, tradingMode]
+      properties:
+        isRunning:
+          type: boolean
+        killSwitchActive:
+          type: boolean
+        tradingMode:
+          type: string
+        todayTrades:
+          type: integer
+        thisHourTrades:
+          type: integer
+        consecutiveLosses:
+          type: integer
+        consecutiveWins:
+          type: integer
+        dailyPnl:
+          type: number
+        currentDrawdown:
+          type: number
+        recoveryModeActive:
+          type: boolean
+        winStreakCautionActive:
+          type: boolean
+        pauseReason:
+          type: ["string", "null"]
+        lastSignalScore:
+          type: ["number", "null"]
+        lastSignalDirection:
+          type: ["string", "null"]
+        currentScore:
+          type: ["number", "null"]
+        openTrade:
+          $ref: "#/components/schemas/OpenTrade"
+        sessionMultiplier:
+          type: number
+        adaptiveWeightsActive:
+          type: boolean
+        rangeContext:
+          type: ["string", "null"]
+        spikeDetected:
+          type: boolean
+        consolidationDetected:
+          type: boolean
+        firstCandleWaiting:
+          type: boolean
+        strategyCircuitBreakerActive:
+          type: boolean
+        cooldownSecondsRemaining:
+          type: ["integer", "null"]
+        scoreBreakdown:
+          $ref: "#/components/schemas/ScoreBreakdown"
+
+    ScoreBreakdown:
+      type: object
+      properties:
+        trend:
+          type: number
+        volatility:
+          type: number
+        timing:
+          type: number
+        pullback:
+          type: number
+        risk:
+          type: number
+        total:
+          type: number
+        direction:
+          type: string
+        trendDirection:
+          type: string
+        bandTouched:
+          type: string
+
+    OpenTrade:
+      type: object
+      properties:
+        id:
+          type: string
+        direction:
+          type: string
+        entryPrice:
+          type: number
+        currentPrice:
+          type: number
+        stake:
+          type: number
+        pnl:
+          type: number
+        stopLoss:
+          type: number
+        takeProfit1:
+          type: number
+        takeProfit2:
+          type: number
+        breakEvenMoved:
+          type: boolean
+        partialClosed:
+          type: boolean
+        momentumExtensionActive:
+          type: boolean
+        openedAt:
+          type: integer
+
+    BotToggleInput:
+      type: object
+      required: [running]
+      properties:
+        running:
+          type: boolean
+
+    Trade:
+      type: object
+      required: [id, userId, direction, status, openedAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        strategyId:
+          type: ["string", "null"]
+        direction:
+          type: string
+        entryPrice:
+          type: ["number", "null"]
+        exitPrice:
+          type: ["number", "null"]
+        stake:
+          type: ["number", "null"]
+        pnl:
+          type: ["number", "null"]
+        pips:
+          type: ["number", "null"]
+        scoreTotal:
+          type: ["number", "null"]
+        scoreTrend:
+          type: ["number", "null"]
+        scoreVolatility:
+          type: ["number", "null"]
+        scoreTiming:
+          type: ["number", "null"]
+        scorePullback:
+          type: ["number", "null"]
+        scoreRisk:
+          type: ["number", "null"]
+        isCopyTrade:
+          type: boolean
+        isPaper:
+          type: boolean
+        tradingMode:
+          type: ["string", "null"]
+        status:
+          type: string
+        stopLoss:
+          type: ["number", "null"]
+        takeProfit1:
+          type: ["number", "null"]
+        takeProfit2:
+          type: ["number", "null"]
+        breakEvenMoved:
+          type: boolean
+        partialClosed:
+          type: boolean
+        momentumExtensionActive:
+          type: boolean
+        recoveryModeActive:
+          type: boolean
+        winStreakCautionActive:
+          type: boolean
+        sessionName:
+          type: ["string", "null"]
+        rangeContext:
+          type: ["string", "null"]
+        openedAt:
+          type: integer
+        closedAt:
+          type: ["integer", "null"]
+
+    TradeListResponse:
+      type: object
+      required: [trades, total]
+      properties:
+        trades:
+          type: array
+          items:
+            $ref: "#/components/schemas/Trade"
+        total:
+          type: integer
+
+    Signal:
+      type: object
+      required: [id, timestamp, scoreTotal, direction, action]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        strategyId:
+          type: ["string", "null"]
+        timestamp:
+          type: integer
+        scoreTotal:
+          type: number
+        scoreTrend:
+          type: number
+        scoreVolatility:
+          type: number
+        scoreTiming:
+          type: number
+        scorePullback:
+          type: number
+        scoreRisk:
+          type: number
+        direction:
+          type: string
+        action:
+          type: string
+        rejectionReason:
+          type: ["string", "null"]
+        ema9:
+          type: ["number", "null"]
+        ema21:
+          type: ["number", "null"]
+        rsi:
+          type: ["number", "null"]
+        sessionName:
+          type: ["string", "null"]
+        rangeContext:
+          type: ["string", "null"]
+
+    SignalListResponse:
+      type: object
+      required: [signals]
+      properties:
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Signal"
+
+    UserStats:
+      type: object
+      required: [totalTrades, wins, losses, winRate, profitFactor, totalPnl, avgScore]
+      properties:
+        totalTrades:
+          type: integer
+        wins:
+          type: integer
+        losses:
+          type: integer
+        winRate:
+          type: number
+        profitFactor:
+          type: number
+        totalPnl:
+          type: number
+        avgScore:
+          type: number
+        bestTrade:
+          type: number
+        worstTrade:
+          type: number
+        maxDrawdown:
+          type: number
+        equityCurve:
+          type: array
+          items:
+            $ref: "#/components/schemas/EquityPoint"
+        sessionPerformance:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionSummary"
+        scoreRangePerformance:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoreRangeSummary"
+        indicatorAccuracy:
+          $ref: "#/components/schemas/IndicatorAccuracy"
+        winStreak:
+          type: integer
+        lossStreak:
+          type: integer
+
+    EquityPoint:
+      type: object
+      required: [time, balance]
+      properties:
+        time:
+          type: integer
+        balance:
+          type: number
+
+    SessionSummary:
+      type: object
+      required: [sessionName, totalTrades, wins, losses, winRate, sessionMultiplier]
+      properties:
+        sessionName:
+          type: string
+        totalTrades:
+          type: integer
+        wins:
+          type: integer
+        losses:
+          type: integer
+        winRate:
+          type: number
+        sessionMultiplier:
+          type: number
+
+    ScoreRangeSummary:
+      type: object
+      required: [range, trades, winRate, avgPnl]
+      properties:
+        range:
+          type: string
+        trades:
+          type: integer
+        winRate:
+          type: number
+        avgPnl:
+          type: number
+
+    IndicatorAccuracy:
+      type: object
+      properties:
+        rsi:
+          type: number
+        stoch:
+          type: number
+        macd:
+          type: number
+        pullback:
+          type: number
+        smc:
+          type: number
+
+    Candle:
+      type: object
+      required: [time, open, high, low, close, volume]
+      properties:
+        time:
+          type: integer
+        open:
+          type: number
+        high:
+          type: number
+        low:
+          type: number
+        close:
+          type: number
+        volume:
+          type: number
+
+    CandleListResponse:
+      type: object
+      required: [candles, timeframe]
+      properties:
+        candles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Candle"
+        timeframe:
+          type: string
+
+    TickResponse:
+      type: object
+      required: [price, timestamp]
+      properties:
+        price:
+          type: number
+        timestamp:
+          type: integer
+        change:
+          type: number
+        direction:
+          type: string
+
+    DerivTokenInput:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    DerivConnectionResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        accountName:
+          type: ["string", "null"]
+        balance:
+          type: ["number", "null"]
+        accountType:
+          type: ["string", "null"]
+        error:
+          type: ["string", "null"]
+
+    TradingProfileInput:
+      type: object
+      required: [profile]
+      properties:
+        profile:
+          type: string
+          enum: [safe, pro, aggressive]
+
+    SettingToggleResponse:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        message:
+          type: string
+
+    AdminOverview:
+      type: object
+      required: [totalUsers, activeBots, onlineNow, inRecovery, pendingSignups]
+      properties:
+        totalUsers:
+          type: integer
+        activeBots:
+          type: integer
+        onlineNow:
+          type: integer
+        inRecovery:
+          type: integer
+        pendingSignups:
+          type: integer
+        globalWinRate:
+          type: number
+        totalTradesToday:
+          type: integer
+        circuitBreakers:
+          type: integer
+        usersByProfile:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfileCount"
+        strategyPerformance:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrategyPerfSummary"
+        recentAlerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SystemAlert"
+
+    ProfileCount:
+      type: object
+      required: [profile, count]
+      properties:
+        profile:
+          type: string
+        count:
+          type: integer
+
+    StrategyPerfSummary:
+      type: object
+      required: [strategyId, name, winRate, totalTrades, usersAssigned]
+      properties:
+        strategyId:
+          type: string
+        name:
+          type: string
+        winRate:
+          type: number
+        totalTrades:
+          type: integer
+        usersAssigned:
+          type: integer
+        circuitBreakerActive:
+          type: boolean
+
+    SystemAlert:
+      type: object
+      required: [type, message, timestamp]
+      properties:
+        type:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: integer
+        severity:
+          type: string
+
+    AdminUser:
+      type: object
+      required: [id, username, email, role, status, isActive]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+        status:
+          type: string
+        isActive:
+          type: boolean
+        tradingProfile:
+          type: ["string", "null"]
+        strategyId:
+          type: ["string", "null"]
+        strategyName:
+          type: ["string", "null"]
+        accountBalance:
+          type: number
+        peakBalance:
+          type: number
+        dailyStartBalance:
+          type: number
+        copyTradingEnabled:
+          type: boolean
+        autoCompoundEnabled:
+          type: boolean
+        adaptiveIntelligenceEnabled:
+          type: boolean
+        country:
+          type: ["string", "null"]
+        hasDerivToken:
+          type: boolean
+        tradingMode:
+          type: ["string", "null"]
+        botRunning:
+          type: boolean
+        recoveryModeActive:
+          type: boolean
+        winStreakCautionActive:
+          type: boolean
+        createdAt:
+          type: ["integer", "null"]
+        lastLogin:
+          type: ["integer", "null"]
+        approvedAt:
+          type: ["integer", "null"]
+        approvedBy:
+          type: ["string", "null"]
+
+    AdminUserListResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminUser"
+
+    AdminCreateUserInput:
+      type: object
+      required: [username, email, country, password]
+      properties:
+        username:
+          type: string
+        email:
+          type: string
+        country:
+          type: string
+        password:
+          type: string
+        tradingProfile:
+          type: string
+        role:
+          type: string
+
+    AdminCreatedUser:
+      type: object
+      required: [id, username, email, password]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+
+    AdminUserUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+        isActive:
+          type: boolean
+        tradingProfile:
+          type: string
+        strategyId:
+          type: string
+        copyTradingEnabled:
+          type: boolean
+        accountBalance:
+          type: number
+
+    PendingSignup:
+      type: object
+      required: [id, username, email, country, status, requestedAt]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+        country:
+          type: string
+        status:
+          type: string
+        requestedAt:
+          type: integer
+        reviewedAt:
+          type: ["integer", "null"]
+        reviewedBy:
+          type: ["string", "null"]
+
+    PendingSignupListResponse:
+      type: object
+      required: [signups]
+      properties:
+        signups:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingSignup"
+
+    TradingProfileConfig:
+      type: object
+      required: [profile, minBalance, maxRiskPercent, maxTradesDay, scoreThreshold, consecutiveLossStop, maxTradesHour]
+      properties:
+        profile:
+          type: string
+        minBalance:
+          type: number
+        maxRiskPercent:
+          type: number
+        maxTradesDay:
+          type: integer
+        scoreThreshold:
+          type: integer
+        consecutiveLossStop:
+          type: integer
+        maxTradesHour:
+          type: integer
+        sessionsEnabled:
+          type: string
+
+    TradingProfileListResponse:
+      type: object
+      required: [profiles]
+      properties:
+        profiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/TradingProfileConfig"
+
+    TradingProfileConfigUpdate:
+      type: object
+      properties:
+        minBalance:
+          type: number
+        maxRiskPercent:
+          type: number
+        maxTradesDay:
+          type: integer
+        scoreThreshold:
+          type: integer
+        consecutiveLossStop:
+          type: integer
+        maxTradesHour:
+          type: integer
+
+    Strategy:
+      type: object
+      required: [id, name, type, status]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        type:
+          type: string
+        status:
+          type: string
+        entryTimeframe:
+          type: string
+        signalTimeframe:
+          type: string
+        trendTimeframe:
+          type: string
+        sessionsEnabled:
+          type: string
+        scoreThreshold:
+          type: integer
+        maxTradesDay:
+          type: integer
+        maxTradesHour:
+          type: integer
+        maxRiskPercent:
+          type: number
+        stopMultiplier:
+          type: number
+        tp1Multiplier:
+          type: number
+        tp2Multiplier:
+          type: number
+        counterTrendEnabled:
+          type: boolean
+        consolidationDetection:
+          type: boolean
+        firstCandleRule:
+          type: boolean
+        spikeFilterEnabled:
+          type: boolean
+        spikeFilterMultiplier:
+          type: number
+        momentumExtensionEnabled:
+          type: boolean
+        autoPauseOnLosses:
+          type: integer
+        circuitBreakerActive:
+          type: boolean
+        usersAssigned:
+          type: integer
+        totalTrades:
+          type: integer
+        winRate:
+          type: number
+        avgScore:
+          type: number
+        createdAt:
+          type: ["integer", "null"]
+
+    StrategyListResponse:
+      type: object
+      required: [strategies]
+      properties:
+        strategies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Strategy"
+
+    StrategyInput:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+        entryTimeframe:
+          type: string
+        signalTimeframe:
+          type: string
+        trendTimeframe:
+          type: string
+        sessionsEnabled:
+          type: string
+        scoreThreshold:
+          type: integer
+        maxTradesDay:
+          type: integer
+        maxTradesHour:
+          type: integer
+        maxRiskPercent:
+          type: number
+        stopMultiplier:
+          type: number
+        tp1Multiplier:
+          type: number
+        tp2Multiplier:
+          type: number
+        counterTrendEnabled:
+          type: boolean
+        consolidationDetection:
+          type: boolean
+        firstCandleRule:
+          type: boolean
+        spikeFilterEnabled:
+          type: boolean
+        spikeFilterMultiplier:
+          type: number
+        momentumExtensionEnabled:
+          type: boolean
+        autoPauseOnLosses:
+          type: integer
+
+    StrategyUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        scoreThreshold:
+          type: integer
+        maxTradesDay:
+          type: integer
+        maxRiskPercent:
+          type: number
+        autoPauseOnLosses:
+          type: integer
+
+    StrategyPerformanceData:
+      type: object
+      required: [strategy, dailyPerformance, sessionBreakdown, indicatorAccuracy, assignedUsers]
+      properties:
+        strategy:
+          $ref: "#/components/schemas/Strategy"
+        dailyPerformance:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyPerformance"
+        sessionBreakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionSummary"
+        indicatorAccuracy:
+          $ref: "#/components/schemas/IndicatorAccuracy"
+        assignedUsers:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrategyUserSummary"
+
+    DailyPerformance:
+      type: object
+      required: [date, trades, wins, losses, pnl, avgScore]
+      properties:
+        date:
+          type: integer
+        trades:
+          type: integer
+        wins:
+          type: integer
+        losses:
+          type: integer
+        pnl:
+          type: number
+        avgScore:
+          type: number
+
+    StrategyUserSummary:
+      type: object
+      required: [userId, username, winRate, totalTrades]
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        winRate:
+          type: number
+        totalTrades:
+          type: integer
+
+    CopyTradeInput:
+      type: object
+      required: [direction, targetUserIds, riskMultiplier]
+      properties:
+        direction:
+          type: string
+          enum: [BUY, SELL]
+        targetUserIds:
+          type: array
+          items:
+            type: string
+        riskMultiplier:
+          type: number
+        forceOverrideUserIds:
+          type: array
+          items:
+            type: string
+
+    CopyTradePreview:
+      type: object
+      required: [willReceive, willSkip, forceAvailable, summary]
+      properties:
+        willReceive:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyTradeUserPreview"
+        willSkip:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyTradeSkipPreview"
+        forceAvailable:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyTradeUserPreview"
+        summary:
+          $ref: "#/components/schemas/CopyTradeSummary"
+
+    CopyTradeUserPreview:
+      type: object
+      required: [userId, username, balance, stake]
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        balance:
+          type: number
+        stake:
+          type: number
+        sessionWeight:
+          type: number
+
+    CopyTradeSkipPreview:
+      type: object
+      required: [userId, username, reason]
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        reason:
+          type: string
+
+    CopyTradeSummary:
+      type: object
+      required: [receiving, skipped, totalCapital, avgExposure]
+      properties:
+        receiving:
+          type: integer
+        skipped:
+          type: integer
+        totalCapital:
+          type: number
+        avgExposure:
+          type: number
+
+    CopyTradeRecord:
+      type: object
+      required: [id, adminId, direction, status, createdAt]
+      properties:
+        id:
+          type: string
+        adminId:
+          type: string
+        direction:
+          type: string
+        riskMultiplier:
+          type: number
+        status:
+          type: string
+        usersTargeted:
+          type: integer
+        usersReceived:
+          type: integer
+        usersSkipped:
+          type: integer
+        createdAt:
+          type: integer
+        executedAt:
+          type: ["integer", "null"]
+
+    CopyTradeHistoryResponse:
+      type: object
+      required: [history]
+      properties:
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyTradeRecord"
+
+    BacktestInput:
+      type: object
+      required: [strategyId, dateFrom, dateTo]
+      properties:
+        strategyId:
+          type: string
+        dateFrom:
+          type: integer
+        dateTo:
+          type: integer
+
+    BacktestResult:
+      type: object
+      required: [id, strategyId, totalTrades, wins, losses, winRate, profitFactor, maxDrawdown, totalPnl]
+      properties:
+        id:
+          type: string
+        strategyId:
+          type: string
+        runBy:
+          type: string
+        dateFrom:
+          type: integer
+        dateTo:
+          type: integer
+        totalTrades:
+          type: integer
+        wins:
+          type: integer
+        losses:
+          type: integer
+        winRate:
+          type: number
+        profitFactor:
+          type: number
+        maxDrawdown:
+          type: number
+        totalPnl:
+          type: number
+        equityCurve:
+          type: array
+          items:
+            $ref: "#/components/schemas/EquityPoint"
+        sessionBreakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionSummary"
+        indicatorAccuracy:
+          $ref: "#/components/schemas/IndicatorAccuracy"
+        scoreRangePerformance:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoreRangeSummary"
+        bestTrade:
+          type: number
+        worstTrade:
+          type: number
+        avgDurationMinutes:
+          type: number
+        sharpeRatio:
+          type: number
+        createdAt:
+          type: integer
+
+    BacktestResultListResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BacktestResult"
+
+    SystemSettings:
+      type: object
+      required: [masterStop]
+      properties:
+        masterStop:
+          type: boolean
+        smtpConfigured:
+          type: boolean
+        dbSize:
+          type: string
+        uptime:
+          type: number
+        totalTrades:
+          type: integer
+
+    MasterStopInput:
+      type: object
+      required: [active]
+      properties:
+        active:
+          type: boolean
+
+    AuthLog:
+      type: object
+      required: [id, username, event, timestamp]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        event:
+          type: string
+        ip:
+          type: ["string", "null"]
+        details:
+          type: ["string", "null"]
+        timestamp:
+          type: integer
+
+    AuthLogListResponse:
+      type: object
+      required: [logs]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuthLog"

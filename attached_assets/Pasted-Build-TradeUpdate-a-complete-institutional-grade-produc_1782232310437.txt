@@ -1,0 +1,1694 @@
+Build TradeUpdate — a complete, institutional-grade, 
+production-ready V75 algorithmic trading platform 
+from absolute scratch. This is a full build, not an 
+edit. Follow every instruction precisely and in order.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — TECH STACK & PROJECT STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Frontend: React + TypeScript + Tailwind CSS
+Backend: Node.js + Express + TypeScript
+Database: SQLite via better-sqlite3
+WebSocket: Native browser WebSocket
+Auth: JWT + bcrypt
+Charts: lightweight-charts (TradingView)
+Icons: lucide-react
+Fonts: Inter from Google Fonts
+Email: Nodemailer with SMTP env config
+PDF Export: jsPDF for backtest reports
+
+Project structure:
+/client          React frontend
+/server          Node.js backend
+/server/db       SQLite + migrations
+/server/services Bot, Deriv, Scoring, Sessions
+/server/routes   Auth, admin, user API routes
+/server/email    Email templates + sender
+/shared          TypeScript types
+
+Single deployable build:
+Server serves built React from /client/dist
+Vite dev server proxies /api to port 3001
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — DATABASE SCHEMA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TABLE: users
+- id TEXT PRIMARY KEY
+- username TEXT UNIQUE NOT NULL
+- password_hash TEXT NOT NULL
+- role TEXT DEFAULT 'user' (admin|user)
+- status TEXT DEFAULT 'pending' 
+  (pending|approved|rejected|suspended)
+- is_active INTEGER DEFAULT 0
+- trading_profile TEXT (safe|pro|aggressive)
+- strategy_id TEXT (assigned strategy)
+- deriv_token_encrypted TEXT
+- account_balance REAL DEFAULT 0
+- peak_balance REAL DEFAULT 0
+- daily_start_balance REAL DEFAULT 0
+- force_password_change INTEGER DEFAULT 1
+- email TEXT UNIQUE NOT NULL
+- country TEXT
+- copy_trading_enabled INTEGER DEFAULT 0
+- auto_compound_enabled INTEGER DEFAULT 1
+- adaptive_intelligence_enabled INTEGER DEFAULT 1
+- created_at INTEGER
+- last_login INTEGER
+- approved_at INTEGER
+- approved_by TEXT
+
+TABLE: trades
+- id TEXT PRIMARY KEY
+- user_id TEXT
+- strategy_id TEXT
+- direction TEXT (BUY|SELL)
+- entry_price REAL
+- exit_price REAL
+- stake REAL
+- pnl REAL
+- pips REAL
+- duration_minutes INTEGER
+- score_total REAL
+- score_trend REAL
+- score_volatility REAL
+- score_timing REAL
+- score_pullback REAL
+- score_risk REAL
+- is_copy_trade INTEGER DEFAULT 0
+- copy_force_overridden INTEGER DEFAULT 0
+- is_paper INTEGER DEFAULT 1
+- trading_mode TEXT
+- status TEXT (open|closed|cancelled)
+- contract_id TEXT
+- stop_loss REAL
+- take_profit_1 REAL
+- take_profit_2 REAL
+- break_even_moved INTEGER DEFAULT 0
+- partial_closed INTEGER DEFAULT 0
+- momentum_extension_active INTEGER DEFAULT 0
+- recovery_mode_active INTEGER DEFAULT 0
+- win_streak_caution_active INTEGER DEFAULT 0
+- session_name TEXT
+- session_weight REAL
+- range_context TEXT (top|middle|bottom)
+- spike_filter_triggered INTEGER DEFAULT 0
+- rsi_at_entry REAL
+- stoch_at_entry REAL
+- macd_at_entry REAL
+- bb_position TEXT
+- smc_structure TEXT
+- pullback_zone_active INTEGER DEFAULT 0
+- opened_at INTEGER
+- closed_at INTEGER
+- tp1_hit_at INTEGER
+- tp2_hit_at INTEGER
+
+TABLE: signal_log
+- id TEXT PRIMARY KEY
+- user_id TEXT
+- strategy_id TEXT
+- timestamp INTEGER
+- score_total REAL
+- score_trend REAL
+- score_volatility REAL
+- score_timing REAL
+- score_pullback REAL
+- score_risk REAL
+- direction TEXT
+- action TEXT (executed|rejected)
+- rejection_reason TEXT
+- ema9 REAL
+- ema21 REAL
+- ema50 REAL
+- adx REAL
+- rsi REAL
+- bb_upper REAL
+- bb_lower REAL
+- bb_width REAL
+- stoch_k REAL
+- macd_histogram REAL
+- range_context TEXT
+- session_name TEXT
+- consolidation_detected INTEGER
+- spike_detected INTEGER
+- first_candle_waiting INTEGER
+- smc_bos INTEGER
+- smc_choch INTEGER
+- order_block_nearby INTEGER
+- fvg_nearby INTEGER
+
+TABLE: strategies
+- id TEXT PRIMARY KEY
+- name TEXT NOT NULL
+- description TEXT
+- type TEXT (trend|reversal|scalping|swing)
+- status TEXT (active|paused|archived)
+- entry_timeframe TEXT (1m|5m|15m)
+- signal_timeframe TEXT
+- trend_timeframe TEXT
+- sessions_enabled TEXT (JSON array)
+- score_threshold INTEGER
+- max_trades_day INTEGER
+- max_trades_hour INTEGER
+- max_risk_percent REAL
+- stop_multiplier REAL
+- tp1_multiplier REAL
+- tp2_multiplier REAL
+- counter_trend_enabled INTEGER DEFAULT 0
+- counter_trend_rsi_threshold REAL DEFAULT 78
+- counter_trend_bb_sigma REAL DEFAULT 2.5
+- consolidation_detection INTEGER DEFAULT 1
+- first_candle_rule INTEGER DEFAULT 1
+- spike_filter_enabled INTEGER DEFAULT 1
+- spike_filter_multiplier REAL DEFAULT 3.0
+- momentum_extension_enabled INTEGER DEFAULT 1
+- weight_trend REAL DEFAULT 1.0
+- weight_volatility REAL DEFAULT 1.0
+- weight_timing REAL DEFAULT 1.0
+- weight_pullback REAL DEFAULT 1.0
+- weight_risk REAL DEFAULT 1.0
+- auto_pause_on_losses INTEGER DEFAULT 5
+- circuit_breaker_active INTEGER DEFAULT 0
+- circuit_breaker_triggered_at INTEGER
+- created_at INTEGER
+- updated_at INTEGER
+- created_by TEXT
+- users_assigned INTEGER DEFAULT 0
+- total_trades INTEGER DEFAULT 0
+- win_rate REAL DEFAULT 0
+- avg_score REAL DEFAULT 0
+
+TABLE: strategy_performance
+- id TEXT PRIMARY KEY
+- strategy_id TEXT
+- user_id TEXT
+- date INTEGER
+- trades_count INTEGER
+- wins INTEGER
+- losses INTEGER
+- pnl REAL
+- avg_score REAL
+- best_session TEXT
+- indicator_rsi_accuracy REAL
+- indicator_stoch_accuracy REAL
+- indicator_macd_accuracy REAL
+- indicator_pullback_accuracy REAL
+- indicator_smc_accuracy REAL
+
+TABLE: adaptive_weights
+- id TEXT PRIMARY KEY
+- user_id TEXT
+- strategy_id TEXT
+- trades_analyzed INTEGER DEFAULT 0
+- weight_rsi REAL DEFAULT 1.0
+- weight_stoch REAL DEFAULT 1.0
+- weight_macd REAL DEFAULT 1.0
+- weight_pullback REAL DEFAULT 1.0
+- weight_smc REAL DEFAULT 1.0
+- weight_trend REAL DEFAULT 1.0
+- weight_volatility REAL DEFAULT 1.0
+- last_updated INTEGER
+
+TABLE: session_performance
+- id TEXT PRIMARY KEY
+- user_id TEXT
+- session_name TEXT
+- total_trades INTEGER DEFAULT 0
+- wins INTEGER DEFAULT 0
+- losses INTEGER DEFAULT 0
+- win_rate REAL DEFAULT 0
+- session_multiplier REAL DEFAULT 1.0
+- last_updated INTEGER
+
+TABLE: copy_trades
+- id TEXT PRIMARY KEY
+- admin_id TEXT
+- direction TEXT
+- risk_multiplier REAL DEFAULT 1.25
+- force_override INTEGER DEFAULT 0
+- status TEXT (pending|executed|cancelled)
+- users_targeted TEXT (JSON array)
+- users_received TEXT (JSON array)
+- users_skipped TEXT (JSON array)
+- skip_reasons TEXT (JSON object)
+- created_at INTEGER
+- executed_at INTEGER
+
+TABLE: backtest_results
+- id TEXT PRIMARY KEY
+- strategy_id TEXT
+- run_by TEXT
+- date_from INTEGER
+- date_to INTEGER
+- total_trades INTEGER
+- wins INTEGER
+- losses INTEGER
+- win_rate REAL
+- profit_factor REAL
+- max_drawdown REAL
+- total_pnl REAL
+- equity_curve TEXT (JSON array)
+- session_breakdown TEXT (JSON)
+- indicator_accuracy TEXT (JSON)
+- score_range_performance TEXT (JSON)
+- best_trade REAL
+- worst_trade REAL
+- avg_duration_minutes REAL
+- created_at INTEGER
+
+TABLE: pending_signups
+- id TEXT PRIMARY KEY
+- username TEXT UNIQUE NOT NULL
+- email TEXT UNIQUE NOT NULL
+- country TEXT
+- password_hash TEXT
+- status TEXT DEFAULT 'pending'
+- requested_at INTEGER
+- reviewed_at INTEGER
+- reviewed_by TEXT
+
+TABLE: system_settings
+- key TEXT PRIMARY KEY
+- value TEXT
+
+TABLE: auth_log
+- id TEXT PRIMARY KEY
+- username TEXT
+- event TEXT
+- ip TEXT
+- details TEXT
+- timestamp INTEGER
+
+TABLE: trading_profiles
+- profile TEXT PRIMARY KEY
+- min_balance REAL
+- max_risk_percent REAL
+- max_trades_day INTEGER
+- score_threshold INTEGER
+- consecutive_loss_stop INTEGER
+- max_trades_hour INTEGER
+- sessions_enabled TEXT
+- updated_at INTEGER
+
+TABLE: notifications_log
+- id TEXT PRIMARY KEY
+- user_id TEXT
+- type TEXT
+- title TEXT
+- body TEXT
+- read INTEGER DEFAULT 0
+- created_at INTEGER
+
+Seed on first run:
+- 3 trading profiles (safe/pro/aggressive)
+- 1 admin user: username=admin, 
+  password=Admin1234!, force_change=1
+- 1 test user: username=Clean10test,
+  password=Test1234!, status=approved,
+  is_active=1, trading_profile=safe,
+  account_balance=5000, peak_balance=5000,
+  daily_start_balance=5000,
+  trading_mode=paper, auto_compound=1,
+  adaptive_intelligence=1
+- 1 default V75 Sniper strategy assigned 
+  to Clean10test
+- System setting: master_stop=false
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — EMAIL SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use Nodemailer. Configure via env variables:
+SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+SMTP_FROM="TradeUpdate <noreply@tradeupdate.app>"
+
+If SMTP not configured, log emails to console
+and save to /server/email/outbox.json for review.
+
+Save ALL signups to /server/data/signups.csv:
+Format: username, email, country, signup_date, status
+This file is downloadable from admin panel.
+
+Email templates (HTML, dark themed, TradeUpdate 
+branded with teal accents):
+
+1. SIGNUP_RECEIVED (to user on signup):
+Subject: "Your TradeUpdate access request received"
+Body: 
+"Hi [username],
+Thank you for requesting access to TradeUpdate.
+Your application is under review. We'll notify 
+you by email once a decision has been made.
+Country registered: [country]
+Account: [email]
+— The TradeUpdate Team"
+
+2. APPROVED (to user on admin approval):
+Subject: "✅ Your TradeUpdate access has been approved"
+Body:
+"Hi [username],
+Great news — your access to TradeUpdate has been 
+approved! You can now log in and start trading.
+Login at: [app_url]/login
+Your account starts on the Safe trading profile.
+Complete your setup by connecting your Deriv 
+API token or start with Paper Trading immediately.
+— The TradeUpdate Team"
+
+3. REJECTED (to user on admin rejection):
+Subject: "TradeUpdate access request update"
+Body:
+"Hi [username],
+Thank you for your interest in TradeUpdate.
+After review, we're unable to approve your 
+access request at this time.
+If you believe this is an error or would like 
+to reapply in the future, please contact us.
+— The TradeUpdate Team"
+
+4. PASSWORD_CHANGE_REQUIRED (on first login):
+Subject: "Action required: Set your TradeUpdate password"
+Body:
+"Hi [username],
+For security, please set a new password 
+on your first login to TradeUpdate.
+— The TradeUpdate Team"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — DERIV WEBSOCKET SERVICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CRITICAL: 
+Endpoint: wss://ws.binaryws.com/websockets/v3?app_id=1089
+Symbol: EXACTLY "R_75" — no other string
+Real R_75 price range: 38,000 - 42,000
+If price shows outside 20,000-80,000 = wrong symbol
+
+DerivService class per user instance:
+
+Paper/no-token mode:
+- Connect WITHOUT authorize call
+- Subscribe to ticks: { "ticks": "R_75", "subscribe": 1 }
+- Subscribe to candles: 
+  { "ticks_history": "R_75", "style": "candles",
+    "granularity": 60, "count": 200,
+    "end": "latest", "subscribe": 1 }
+- All features work except real order placement
+
+Authorized mode (with token):
+- Connect then send: { "authorize": "TOKEN" }
+- Get balance after auth
+- Same subscriptions as above
+- Enable real order placement
+
+Keep-alive: { "ping": 1 } every 25 seconds
+
+Build candle aggregation:
+1m from raw ticks (OHLCV per minute)
+5m by grouping 5x 1m candles
+15m by grouping 15x 1m candles
+
+Price validation on every tick:
+If price outside 20,000-80,000:
+Log error + show "Price data error — reconnecting"
+Disconnect and reconnect immediately
+
+Reconnection with exponential backoff:
+Attempt 1: wait 3 seconds
+Attempt 2: wait 6 seconds
+Attempt 3: wait 12 seconds
+Attempt 4+: wait 30 seconds
+After 5 failures: emit disconnected event, pause bot
+
+Place order (2-step Deriv flow):
+Step 1: { "proposal": 1, "amount": STAKE,
+  "basis": "stake", "contract_type": "CALL"/"PUT",
+  "currency": "USD", "duration": 15,
+  "duration_unit": "m", "symbol": "R_75" }
+Step 2: { "buy": PROPOSAL_ID, "price": ASK_PRICE }
+
+Close contract: { "sell": CONTRACT_ID, "price": 0 }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — INSTITUTIONAL SCORING ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ScoringEngine class with 7 analysis layers.
+Minimum 50 candles before any scoring.
+Show "Gathering market data..." until ready.
+Never show 0.0 scores — always show loading state.
+
+Total score: 0-50 points
+
+LAYER 1 — HIGHER TIMEFRAME TREND (15m)
+Calculate: EMA9, EMA21, EMA50, ADX(14)
+
+Trend Score (0-10):
+10: EMA9>EMA21>EMA50 AND ADX>30 (strong bull)
+   OR EMA9<EMA21<EMA50 AND ADX>30 (strong bear)
+8: EMA9/EMA21 aligned AND ADX 25-30
+6: EMA9/EMA21 aligned AND ADX 20-25
+3: Mixed EMA alignment
+0: ADX < 20 (choppy — avoid)
+
+Store: trendDirection = BULL|BEAR|NEUTRAL
+
+LAYER 2 — SMART MONEY CONCEPTS (15m+5m)
+Detect:
+- Market structure: HH/HL (bull) or LH/LL (bear)
+- Break of Structure (BOS): close beyond last swing
+- Change of Character (CHoCH): first opposing BOS
+- Order Blocks: last opposite candle before BOS
+- Fair Value Gaps: gap between candle 1 and 3
+
+SMC Score: add up to +2 to Trend Score if:
+- Structure aligns with EMA trend
+- Price near order block in trend direction
+- No CHoCH in last 10 candles
+
+LAYER 3 — VOLATILITY EXPANSION (5m)
+Calculate: BB(20, 2σ), Band Width, ATR(14)
+
+Volatility Score (0-10):
+10: Bands expanding >8% vs 10 bars ago
+   AND price within 0.5σ of band edge
+   AND ATR increasing
+8: Bands expanding 4-8% AND near band edge
+5: Bands neutral
+2: Bands contracting (squeeze forming)
+0: Hard squeeze — avoid entry
+
+Store: bandTouched = UPPER|LOWER|NONE
+Store: atrValue for stop calculation
+
+LAYER 4 — ENTRY TIMING (5m+1m)
+RSI(14) on 5m:
++3.5 if RSI > 72 (sell) or RSI < 28 (buy)
++2 if RSI > 65 or RSI < 35
++0 if RSI 35-65
+RSI divergence: +1 bonus if detected
+
+Stochastic(5,3,3) on 5m:
++3 if %K>82 (sell) or %K<18 (buy) AND crossed %D
++1.5 if %K>75 or %K<25
+
+MACD(12,26,9) on 5m:
++3.5 if histogram crosses zero in trade direction
++2 if histogram trending but not crossed
+MACD divergence: +0.5 bonus
+
+Entry Timing total: 0-10
+Minimum 2 of 3 indicators must score > 0
+
+LAYER 5 — PULLBACK QUALITY (1m+5m)
+Valid buy zone:
+Price within 0.1% of EMA21 on 5m
+OR price at middle BB
+OR price at detected Order Block
+OR price in Fair Value Gap
+
+Pullback Score (0-10):
+10: In pullback zone AND rejection wick on 1m
+7: In pullback zone, no rejection yet
+4: Slightly outside pullback zone
+0: Not near pullback zone
+
+LAYER 6 — CANDLE PATTERN (1m)
+Check last 3 closed 1m candles:
+- Bullish/Bearish engulfing
+- Pin bar (wick 2× body size)
+- Inside bar breakout
+- Doji + directional resolution
+No pattern = cap total score at 25
+Pattern confirmed = allow full score
+
+LAYER 7 — RISK ALIGNMENT (dynamic)
+Auto stop = 1.5 × signal candle height
+Min 50 pips, Max 200 pips
+TP1 = 1.5× stop (50% close)
+TP2 = 3× stop (remaining 50%)
+Min R:R = 2:1
+
+Risk Score (0-10):
+10: No daily loss, zero consecutive losses,
+   stop 50-200 pips, R:R ≥ 2:1, within limits
+7: 1 consecutive loss, still within limits
+5: Approaching daily loss limit (>70% used)
+2: 1 more loss stops bot
+0: Daily loss hit OR 2+ consecutive losses
+   OR stop outside range OR R:R < 2:1
+
+SIGNAL DIRECTION (all must be true):
+BUY: trendDirection=BULL, bandTouched=LOWER,
+   RSI<40, Stoch<30, Pullback≥4, 
+   No CHoCH last 10 candles, Pattern confirmed
+SELL: trendDirection=BEAR, bandTouched=UPPER,
+   RSI>60, Stoch>70, Pullback≥4,
+   No CHoCH last 10 candles, Pattern confirmed
+
+ADAPTIVE INTELLIGENCE (after 50 trades):
+Track accuracy per indicator per trade.
+Recalculate weights every 25 trades after that.
+If indicator accuracy < 45%: weight × 0.85
+If indicator accuracy > 65%: weight × 1.10
+Cap: max 1.5× original, min 0.5× original
+Apply user's adaptive weights to scoring.
+
+RANGE CONTEXT FILTER:
+Calculate 30-day high and low.
+Top 20%: BUY scores × 0.85, SELL scores × 1.10
+Bottom 20%: SELL scores × 0.85, BUY scores × 1.10
+Middle 60%: no adjustment
+
+SPIKE FILTER (always active):
+If any 1m candle range > 3× ATR(14):
+Classify as spike candle
+Cancel pending entries
+Move open trade stop to break even immediately
+Wait 2 full 1m candles then re-enable
+Status: "⚡ Spike detected — waiting 2 candles"
+
+CONSOLIDATION DETECTOR:
+If last 8 candles on 5m have range < 1.5× ATR:
+Disable trend-following entries
+Enable breakout mode:
+If price closes beyond consolidation by 0.5× ATR:
+Enter immediately on breakout candle close
+Suspend pullback entry rule for breakout trades
+Status: "◼ Consolidation — awaiting breakout"
+
+FIRST CANDLE RULE:
+Wait for first full 15m candle after session open
+If first candle range > 2.5× ATR: wait 2 candles
+Status: "⏱ Waiting for first session candle — Xm"
+
+FALSE BREAKOUT FILTER:
+Price closes outside BB then back inside next candle
+= false breakout — reject, log reason
+
+COUNTER-TREND MODE (Reversal strategy only):
+Requires: RSI>78 (sell) or RSI<22 (buy)
+Requires: BB breach ≥ 2.5σ
+Requires: Confirmed rejection wick on 1m
+Stop: beyond extreme wick high/low
+Target: middle BB only
+Max risk: 0.75% regardless of profile
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — TRADING SESSIONS ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Sessions (UTC):
+- Asian/Tokyo: 00:00-03:00 (MODERATE)
+- London Open: 07:00-10:00 (HIGH)
+- London/NY Overlap: 12:00-15:00 (PREMIUM)
+- NY Afternoon: 13:00-16:00 (HIGH)
+
+Per-strategy session assignment.
+Convert all times to user's local timezone.
+Outside sessions: update scores, no trades.
+Show countdown to next session.
+Show session quality badge.
+
+PERSONAL SESSION WEIGHTING (after 20 trades):
+Win rate < 40%: stake × 0.50
+Win rate 40-55%: stake × 0.75
+Win rate 55-70%: stake × 1.00
+Win rate > 70%: stake × 1.10
+Show: "This session weight: 75%"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — BOT ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+One BotEngine instance per active user.
+
+State includes:
+- isRunning, killSwitchActive
+- tradingMode (paper|options)
+- todayTrades, thisHourTrades
+- consecutiveLosses, consecutiveWins
+- dailyStartBalance, peakBalance
+- dailyPnL, currentDrawdown
+- recoveryModeActive
+- winStreakCautionActive
+- sessionMultiplier
+- adaptiveWeights
+- lastTradeTime, openTrade
+- lastSignalEvaluation
+- pauseReason
+- strategyCircuitBreakerActive
+
+EVALUATION LOOP (on every new 5m candle close):
+1. Check master stop → pause if active
+2. Check kill switch → stop if active
+3. Check strategy circuit breaker → pause if active
+4. Check session filter → wait if outside
+5. Check first candle rule → wait if needed
+6. Check consolidation → handle breakout mode
+7. Check daily loss cap → stop if hit
+8. Check consecutive losses → pause if at limit
+9. Check cooldown (10 min) → wait if active
+10. Check hourly/daily trade limits
+11. Run scoring engine
+12. Apply adaptive weights
+13. Apply range context adjustment
+14. Apply session multiplier to stake
+15. Log signal to signal_log
+16. Check score vs threshold
+17. Check candle pattern confirmation
+18. Execute trade if all conditions met
+
+RECOVERY MODE:
+Trigger: currentDrawdown ≥ 15% from peakBalance
+Actions:
+- Switch to Safe profile rules
+- Reduce stake to 50% of Safe stake
+- Raise score threshold by 8 points
+- Show "RECOVERY MODE" amber banner
+- Tag all trades with recovery_mode_active=1
+- Minimum 3 trades before exit check
+
+Exit recovery when:
+- Balance recovers to 95% of trigger peak
+- AND minimum 3 trades completed in recovery
+- Exit gracefully: 50% stake increase for 24hrs
+  then full normal stake after 48hrs
+- Send recovery exit notification
+
+WIN STREAK CAUTION:
+Trigger: 5 consecutive wins
+Action: reduce stake by 20% for next 3 trades
+Show: "🔥 5 win streak — caution mode active"
+Reset: on any loss OR after 3 trades complete
+
+AUTO-COMPOUND:
+Recalculate stake daily at midnight UTC
+New stake = (current_balance × risk_percent) / 100
+Apply session multiplier after compound calc
+Show: "💹 Stake updated: $11.20 (from $10.00)"
+Toggle: user can disable in settings
+
+TRADE EXECUTION:
+Calculate stake:
+base_stake = balance × risk_percent / 100
+Apply win streak caution if active (×0.80)
+Apply session multiplier
+Apply recovery mode reduction if active (×0.50)
+Apply copy trade multiplier if copy (×1.25)
+Min stake $1, max $50
+
+If paper: simulate trade entry
+If options: call derivService.placeOrder()
+Save to trades table with all fields
+
+TRADE MONITOR (every 5 seconds):
+Check stop loss → close if hit (loss)
+Check TP1 (1.5× stop):
+  Close 50%, set partial_closed=1
+  Begin trailing from TP1 level with 1× ATR
+Check TP2 (3× stop):
+  Close remaining 50% unless extension active
+Break even: when profit = 1× stop distance
+  Move stop to entry, set break_even_moved=1
+Trailing stop after partial: trail from TP1
+Time stop: close after 45 minutes
+
+MOMENTUM EXTENSION MODE:
+When TP2 is about to be hit, check:
+MACD histogram still expanding AND
+RSI not yet at extreme (70 buy / 30 sell) AND
+Price not within 20 pips of order block
+If all true: cancel TP2, switch to trailing stop
+  1.5× ATR from current price
+  Check conditions every 1m candle
+  When any condition breaks: tighten trail, exit
+Show: "🚀 Momentum extension — trailing at [price]"
+
+STRATEGY CIRCUIT BREAKER:
+Track consecutive losses per strategy across users
+At strategy.auto_pause_on_losses (default 5):
+Set circuit_breaker_active=1 on strategy
+Pause ALL users on that strategy
+Send admin alert notification
+Admin must manually review and reactivate
+Minimum 4 hour review period enforced
+
+KILL SWITCH:
+Set killSwitchActive=true
+Close open trade immediately
+If options: call sell on contract
+Log event
+Reset button available (with confirmation modal)
+Does NOT persist across server restarts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — COPY TRADING ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CopyTradingService:
+
+Admin selects:
+- Direction (BUY/SELL)
+- Target users (checkboxes)
+- Risk multiplier (1×, 1.25×, 1.5×)
+- Force override toggle (per user)
+
+Pre-execution preview (loads instantly):
+Column 1 — WILL RECEIVE (green):
+  Username, balance, calculated stake,
+  session weight, open trade = none
+
+Column 2 — WILL BE SKIPPED (red):
+  Username + reason:
+  "Open trade active"
+  "Daily limit reached"
+  "Direction contradicts 15m trend"
+  "In recovery mode"
+  "Daily loss limit reached"
+  "Strategy circuit breaker active"
+
+Column 3 — FORCE OVERRIDE AVAILABLE (gold):
+  Users skipped due to direction conflict only
+  Individual checkboxes to force include
+  Warning: "Direction contradicts their trend"
+
+Bottom summary:
+"Receiving: 4 users | Skipped: 2 users
+Total capital deployed: $47.50
+Average exposure: 1.2% per account"
+
+On confirm:
+- Send trade to all receiving users
+- Bypass cooldown timer for copy trades
+- Respect ALL other risk rules
+- Tag trades: is_copy_trade=1
+- If force override: copy_force_overridden=1
+- Log to copy_trades table
+- Never close existing open trades
+  If user has open trade: skip with reason logged
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 9 — STRATEGY MANAGEMENT SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Strategy Library with 3 pre-built strategies:
+
+STRATEGY 1: V75 Sniper (default)
+Type: Scalping
+Entry: 1m, Signal: 5m, Trend: 15m
+Sessions: London Open, London/NY Overlap
+Threshold: 38/50
+Max trades/day: 6, Max/hour: 3
+Stop: 1.5× signal candle
+TP1: 1.5× stop, TP2: 3× stop
+Counter-trend: OFF
+Consolidation detection: ON
+First candle rule: ON
+Spike filter: ON (3× ATR)
+Momentum extension: ON
+
+STRATEGY 2: V75 Swing
+Type: Swing
+Entry: 15m, Signal: 15m, Trend: 1h (use 4×15m)
+Sessions: All sessions
+Threshold: 35/50
+Max trades/day: 3, Max/hour: 1
+Stop: 2× signal candle
+TP1: 2× stop, TP2: 4× stop
+Counter-trend: OFF
+Consolidation detection: ON
+First candle rule: OFF (swing doesn't need it)
+Spike filter: ON (4× ATR, less sensitive)
+Momentum extension: ON
+
+STRATEGY 3: V75 Reversal
+Type: Counter-trend
+Entry: 1m, Signal: 5m, Trend: 15m
+Sessions: Asian (best), All enabled
+Threshold: 42/50 (very selective)
+Max trades/day: 2, Max/hour: 1
+Stop: Beyond extreme wick
+Target: Middle BB only
+Counter-trend: ON (RSI>78/<22, BB 2.5σ)
+Max risk: 0.75% hard cap
+Momentum extension: OFF (target is fixed)
+
+Strategy Builder Form (multi-step):
+Step 1: Name, description, type selector
+Step 2: Timeframe configuration
+Step 3: Session assignment with quality badges
+Step 4: Scoring thresholds and limits
+Step 5: Risk configuration
+Step 6: Advanced features toggles
+Step 7: Review — live logic summary panel
+
+Live Logic Summary Panel (right side):
+Updates in real English as form fills:
+"Entry signal: RSI below 28 on 5m chart"
+"Trend filter: EMA9 > EMA21 on 15m"
+"Sessions: London Open + NY Overlap only"
+"Max risk: 1.5% per trade"
+"Spike filter: Active at 3× ATR"
+"Counter-trend: Disabled"
+
+Strategy Performance Dashboard per strategy:
+- Win rate across all assigned users
+- Average entry score
+- Best/worst sessions
+- Indicator accuracy breakdown (bar chart)
+- Auto-pause history
+- Circuit breaker status and history
+- Assigned users list
+
+Assign strategy: dropdown on user card in admin
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 10 — BACKTESTING ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BacktestService:
+Uses stored candle history from database
+Default period: 30 days
+Runs scoring engine on historical candles
+Simulates trade execution with paper P&L
+
+Process:
+1. Load 30 days of R_75 candle data
+2. Replay candle by candle chronologically
+3. Run scoring engine on each candle
+4. Simulate entries, stops, TPs, time stops
+5. Track running balance, peak, drawdown
+6. Log every simulated trade
+7. Calculate all metrics
+
+Results:
+- Total trades, wins, losses
+- Win rate percentage
+- Profit factor (gross wins / gross losses)
+- Maximum drawdown (% and $)
+- Total simulated P&L
+- Equity curve (JSON array of balance points)
+- Trades by session (count + win rate each)
+- Score range performance table:
+  25-29 | 30-34 | 35-39 | 40-44 | 45-50
+  (trades, win rate, avg P&L per range)
+- Indicator accuracy in backtest
+- Best trade, worst trade, avg duration
+- Sharpe ratio (if > 1.5 = good strategy)
+
+Side-by-side comparison view:
+Left: Backtest results (new strategy)
+Right: Live performance (current strategy)
+Comparison metrics highlighted:
+Green: Backtest better than live
+Red: Backtest worse than live
+Shows: "Backtest suggests +12% improvement
+in win rate vs current live performance"
+
+Export: PDF report with all charts and metrics
+"Deploy Strategy" button activates after review:
+Shows confirmation: "This will replace the 
+current strategy for [X] assigned users. Confirm?"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 11 — AUTH + SIGNUP SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POST /api/auth/signup
+- Validate username (3-20 chars, alphanumeric)
+- Validate email format
+- Validate password strength
+- Validate country provided
+- Hash password with bcrypt
+- Save to pending_signups table
+- Send SIGNUP_RECEIVED email to user
+- Create admin notification in admin panel
+- Save to /server/data/signups.csv
+- Return: { success, message: "Application submitted" }
+
+POST /api/auth/login
+- Check pending_signups first:
+  If found and status=pending: 
+  Return 403 { status: 'pending' }
+  If found and status=rejected:
+  Return 403 { status: 'rejected' }
+- Check users table
+- If user found but status=pending:
+  Return 403 { status: 'pending' }
+- Validate password
+- Check account lockout (5 fails = 15 min lock)
+- Generate JWT (8 hour expiry, httpOnly cookie)
+- Log successful login with IP
+- Return: { role, username, mustChangePassword,
+           hasProfile, hasToken }
+
+POST /api/auth/logout
+- Clear JWT cookie server-side
+- Log logout event
+- Return 200
+
+POST /api/admin/signups/approve/:id
+- Move from pending_signups to users table
+- Set status=approved, is_active=1
+- Assign safe profile
+- Send APPROVED email to user
+- Log admin action
+
+POST /api/admin/signups/reject/:id
+- Update pending_signups status=rejected
+- Send REJECTED email to user
+- Log admin action
+
+Rate limiting:
+Auth routes: 10 requests/minute/IP
+All other routes: 60 requests/minute
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 12 — ALL API ROUTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER ROUTES (requires auth JWT):
+GET /api/user/dashboard
+GET /api/user/trades
+GET /api/user/signals
+GET /api/user/stats (analytics data)
+GET /api/user/bot/status
+POST /api/user/bot/toggle
+POST /api/user/bot/kill
+POST /api/user/bot/reset-kill
+POST /api/user/bot/resume
+POST /api/user/settings/token
+POST /api/user/settings/profile
+POST /api/user/settings/compound-toggle
+POST /api/user/settings/adaptive-toggle
+GET /api/user/chart/candles
+GET /api/user/tick
+GET /api/user/stream (SSE)
+
+ADMIN ROUTES (requires auth + admin role):
+GET /api/admin/overview
+GET /api/admin/users
+POST /api/admin/users/create
+PATCH /api/admin/users/:id
+DELETE /api/admin/users/:id
+GET /api/admin/users/:id/dashboard
+GET /api/admin/signups (pending list)
+POST /api/admin/signups/approve/:id
+POST /api/admin/signups/reject/:id
+GET /api/admin/signups/export (CSV download)
+GET /api/admin/profiles
+PATCH /api/admin/profiles/:profile
+GET /api/admin/strategies
+POST /api/admin/strategies/create
+PATCH /api/admin/strategies/:id
+DELETE /api/admin/strategies/:id
+POST /api/admin/strategies/:id/assign/:userId
+POST /api/admin/strategies/:id/pause
+POST /api/admin/strategies/:id/reactivate
+GET /api/admin/strategies/:id/performance
+POST /api/admin/copy-trade/preview
+POST /api/admin/copy-trade/execute
+GET /api/admin/copy-trade/history
+POST /api/admin/backtest/run
+GET /api/admin/backtest/results
+GET /api/admin/backtest/:id/export
+GET /api/admin/settings
+POST /api/admin/settings/master-stop
+GET /api/admin/logs
+GET /api/admin/stream (SSE)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 13 — ROUTE STRUCTURE (FRONTEND)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/ → Landing page (public)
+/login → User login
+/admin-login → Admin login (hidden)
+/signup → Request access form
+/pending → Awaiting approval screen
+/setup → First-time setup wizard
+/dashboard → Home tab
+/dashboard/chart → Chart tab
+/dashboard/trades → Trades + Stats tab
+/dashboard/settings → Settings tab
+/admin → Admin overview
+/admin/users → User management + signups
+/admin/strategies → Strategy library
+/admin/copy → Copy trading
+/admin/backtest → Backtesting
+/admin/profiles → Profile configuration
+/admin/settings → System settings
+/admin/logs → Auth + activity logs
+/logout → Clear session → /login
+
+Route guards:
+/ → public, no auth needed
+/login, /signup, /pending → redirect to 
+  /dashboard if already authenticated
+Protected routes → /login if no valid JWT
+/admin/* → /dashboard if not admin role
+/setup → only if no profile set yet
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 14 — LANDING PAGE (/)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Brand: TradeUpdate
+Tagline: "Trade Smarter, Not Harder"
+Theme: Dark (--bg-primary: #080A0F)
+Accent: Teal #00D4A4
+Generate a logo: "TU" monogram in teal
+with a subtle upward arrow or waveform
+
+NAVIGATION BAR (sticky):
+Left: TU logo + "TradeUpdate" text
+Right: "Login" button (outlined teal)
+      "Request Access" button (filled teal)
+Mobile: hamburger menu
+
+HERO SECTION:
+Large headline: "Trade Smarter, Not Harder"
+Sub: "Institutional-grade V75 algorithmic trading.
+Powered by AI scoring. Protected by smart risk management."
+Two CTAs:
+"Request Access" (primary teal button)
+"See How It Works" (ghost button, scrolls down)
+Background: subtle animated grid/particle effect
+or teal gradient mesh in bottom corner
+
+LIVE STATS BAR (below hero):
+Real numbers from database, updates every 30 seconds:
+[Total Trades Executed: 1,247]
+[Average Win Rate: 68%]
+[Strategies Available: 3]
+[System Uptime: 99.8%]
+Horizontal scrolling ticker on mobile
+
+HOW IT WORKS (3 steps):
+Step 1 — Request Access
+Icon: Shield
+"Apply for access and get approved 
+by our team within 24 hours."
+
+Step 2 — Connect & Configure  
+Icon: Link/plug
+"Connect your Deriv account or start 
+with Paper Trading immediately. 
+Choose your risk profile."
+
+Step 3 — Let TradeUpdate Trade
+Icon: Bot/robot
+"Our AI-powered bot monitors V75 24/7,
+scores every setup, and only trades 
+when conditions are near-perfect."
+
+FEATURES SECTION (grid of 6 cards):
+1. 🧠 AI Scoring Engine
+"7-layer analysis scores every setup 
+out of 50 before entering a trade."
+
+2. 🛡️ Smart Risk Management  
+"Automatic stop loss, break even moves,
+partial profit taking and trailing stops."
+
+3. 📊 Multiple Strategies
+"V75 Sniper, Swing, and Reversal strategies.
+Assigned by our team to match your account."
+
+4. 🔄 Auto-Compound
+"Automatically grows your stake as your 
+balance increases for exponential returns."
+
+5. 📱 Mobile First
+"Full dashboard on any device. Push 
+notifications so you never miss a trade."
+
+6. 🛡️ Recovery Mode
+"Automatically switches to ultra-conservative 
+settings if drawdown reaches 15%."
+
+TESTIMONIALS SECTION:
+3 placeholder testimonial cards (replace later):
+Card 1:
+"TradeUpdate completely changed how I approach V75.
+The risk management alone saved my account twice."
+— Sarah K., UK 🇬🇧 | Pro Trader
+
+Card 2:
+"I was skeptical at first but the AI scoring 
+is genuinely impressive. 71% win rate in month 1."
+— Michael T., South Africa 🇿🇦 | Safe Profile
+
+Card 3:
+"The recovery mode feature is brilliant. 
+It caught a losing streak before it got serious."
+— James O., Nigeria 🇳🇬 | Aggressive Trader
+
+FAQ SECTION:
+Q1: "Is my money safe?"
+A: "Your funds remain in your own Deriv account 
+at all times. TradeUpdate never holds or 
+accesses your capital directly. We only 
+trade on your behalf through your API token 
+which you can revoke at any time."
+
+Q2: "What is Volatility 75 Index?"
+A: "V75 is a synthetic index on the Deriv 
+platform that simulates 75% market volatility. 
+It trades 24/7 with no news events, making it 
+ideal for algorithmic trading with consistent 
+technical patterns."
+
+Q3: "Do I need trading experience?"
+A: "No experience required. TradeUpdate handles 
+all analysis and execution automatically. 
+You choose a risk profile and the bot 
+does the rest within strict safety limits."
+
+FINAL CTA SECTION:
+"Ready to trade smarter?"
+"Join traders already using TradeUpdate 
+to trade V75 algorithmically."
+Large "Request Access" button
+"Access is by approval only. 
+Applications reviewed within 24 hours."
+
+FOOTER:
+Left: TU logo + tagline
+Center: Links (How It Works, Features, FAQ, Login)
+Right: "© 2025 TradeUpdate. All rights reserved."
+Note: "Trading involves risk. Past performance 
+does not guarantee future results."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 15 — SIGNUP PAGE (/signup)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Header: TU logo + "TradeUpdate"
+Title: "Request Access"
+Subtitle: "Applications are reviewed manually. 
+You'll receive an email once approved."
+
+FORM FIELDS:
+Username (3-20 chars, alphanumeric only)
+Email address
+Country (searchable dropdown, all countries)
+Password (min 8 chars, 1 upper, 1 number, 1 special)
+Confirm Password
+Checkbox: "I understand trading involves risk 
+and I may lose money. I am responsible for 
+my own trading decisions."
+
+Password strength indicator bar below password:
+Weak (red) | Fair (gold) | Strong (teal)
+
+"Submit Application" button (full width, teal)
+
+On submit success: 
+Redirect to /pending page
+
+Validation errors show inline below each field.
+
+"Already have access? Login" link below button.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 16 — PENDING PAGE (/pending)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TU logo centered
+Large clock/hourglass icon (teal)
+"Application Under Review"
+"Thank you for applying to TradeUpdate.
+Our team will review your application 
+and send a decision to your email 
+within 24 hours."
+
+"What happens next:" bullet list:
+• You'll receive a confirmation email shortly
+• Our team will review your application  
+• If approved, you'll get an email with login details
+• If you have questions, contact us
+
+Logout/back to home link at bottom.
+
+If user tries to login before approval:
+Show this same pending screen.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 17 — LOGIN PAGES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER LOGIN (/login):
+Dark full screen
+Centered card: 380px max, 40px padding
+TU logo (56px) with teal pulse glow animation
+"TradeUpdate" 22px bold
+"Professional V75 Trading" 13px muted grey
+
+Username field (floating label)
+Password field + show/hide toggle
+"Login" button (teal gradient, 52px, full width)
+Error: "Invalid username or password"
+"Don't have access? Request it here" → /signup
+
+Hidden admin trigger:
+Click TU logo 3 times within 2 seconds
+"System Administration" fades in quietly
+Auto-disappears after 5 seconds
+Navigates to /admin-login
+"v1.0" barely visible at very bottom
+
+ADMIN LOGIN (/admin-login):
+Same layout, gold/amber accent
+"Administrator Access" badge above form
+Back arrow top left → /login
+Failed attempts counter after 2 failures
+Lock after 5 attempts (15 min)
+No link to user login
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 18 — SETUP WIZARD (/setup)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3-step wizard with progress bar at top.
+
+STEP 1 — Welcome:
+"Welcome to TradeUpdate, [username]"
+Brief what-the-bot-does summary
+"Get Started" button
+
+STEP 2 — Connect Deriv:
+Instructions to get API token
+Token input (masked)
+"Test Connection" button
+On success: show account name + balance
+Account type badge: DEMO / LIVE
+"Skip — use Paper Trading" link
+Continue button (disabled until tested or skipped)
+
+STEP 3 — Your Profile:
+Safe / Pro / Aggressive cards
+Show all profile details
+Grey out if balance insufficient
+On select: confirm modal with risk warning
+Save → redirect to /dashboard
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 19 — USER DASHBOARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Design tokens:
+--bg-primary: #080A0F
+--bg-card: #0F1117
+--border: #1C1F2E
+--accent-teal: #00D4A4
+--accent-red: #FF4060
+--accent-gold: #FFB347
+--accent-amber: #F59E0B
+--text-primary: #F0F2FF
+--text-secondary: #8890AA
+Font: Inter, tabular-nums for prices
+
+HEADER (60px fixed):
+Left: TU logo small (teal glow)
+Center: Live R_75 price + tick arrow
+  Smooth number transition 150ms
+  Green ↑ for up, Red ↓ for down
+Right: Connection dot + username circle
+  Tap circle → logout dropdown
+
+STATUS BANNER (below header):
+SAFE: teal pill "● SAFE"
+WARNING: gold "⚠ WARNING — 75% daily loss"
+STOPPED: red "✕ STOPPED — [reason]"
+RECOVERY: amber "🛡 RECOVERY MODE"
+MAINTENANCE: purple "System maintenance"
+WIN STREAK: fire orange "🔥 Win streak caution"
+CIRCUIT BREAKER: red "⚡ Strategy paused"
+
+BOTTOM TAB BAR (64px, iOS safe area):
+Home | Chart | Trades | Settings
+Active: teal icon + teal label + teal dot
+
+HOME TAB:
+2×2 stat cards (balance, equity, P&L, win rate)
+
+Intelligence status strip (horizontal):
+"🧠 AI: 34/50 | 📊 Range: Middle | 
+⚡ Session: 75% weight | 🔄 Compound: ON"
+
+Bot control card with:
+Active/paused toggle
+Profile + strategy badge
+Trades today counter
+Cooldown countdown
+Pause reason (specific message)
+Resume button when needed
+Kill switch (hold 1.5 seconds)
+Reset kill switch button when active
+
+Status indicators (when relevant):
+"⚡ Spike detected — waiting 2 candles"
+"◼ Consolidation — awaiting breakout"
+"⏱ First session candle — 8 min"
+"🛡 Recovery: 73% complete"
+"🚀 Momentum extension active"
+"💹 Stake updated: $11.20"
+"📋 Copy trade received — BUY"
+"📋 Copy trade skipped — open trade"
+
+Session cards (horizontal scroll):
+4 cards, local timezone, quality badges
+
+Stats row:
+Best today | Worst today | Streak | Hour count
+
+CHART TAB:
+Timeframe: 1m | 5m | 15m pills
+Full width chart (lightweight-charts)
+Green candles: #00D4A4, Red: #FF4060
+
+Overlays (toggleable eye icon):
+Bollinger Bands (white 30% opacity)
+EMA9 (teal dashed), EMA21 (gold dashed)
+EMA50 (purple dashed, 15m only)
+Order blocks (teal/red shaded boxes)
+Fair Value Gaps (shaded zones)
+30-day high/low (horizontal dashed lines)
+Top/bottom 20% zone shading (subtle)
+Consolidation zone (grey box when active)
+Signal markers (▲▼ triangles)
+Spike candle highlight (red outline)
+Session open vertical line
+Pullback zone yellow dot ●
+Momentum extension continuation marker
+
+Score panel below chart:
+80px circular score ring (red/gold/teal)
+Score: X/50
+BUY/SELL/NO SIGNAL badge
+5 component bars with color coding
+SMC status row
+Range context indicator
+Pullback zone status
+Last evaluation + reason
+Next candle countdown
+
+TRADES TAB:
+Open trade card (if active, full details)
+Sub-tabs: History | Statistics
+
+HISTORY:
+Filter pills: All | Win | Loss | Paper | Copy
+Trade cards with full expandable details
+Copy trade badge on copied trades
+
+STATISTICS:
+Performance metrics grid
+Equity curve (real trade history only)
+Score range win rate chart
+Session performance table
+Indicator accuracy breakdown
+"Your Best Setups" section
+Streak tracker
+Profit factor
+
+SETTINGS TAB:
+Connection section (token, account type, mode)
+Profile section (view only, change password)
+Trading section:
+  Auto-compound toggle + current stake display
+  Adaptive intelligence toggle + progress
+  Personal session weights (view only)
+Notifications section (toggle per type)
+Copy trading status (if enrolled)
+Logout button (outlined red, full width)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 20 — ADMIN PANEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Gold accent theme.
+Bottom tabs on mobile:
+Overview | Users | Strategies | Copy | Backtest | Settings
+
+OVERVIEW TAB:
+Stat cards: Total Users | Active Bots | 
+Online Now | In Recovery | Uptime
+Users by profile donut chart
+Strategy performance comparison bar chart
+Global win rate trend line
+Alerts: circuit breakers, disconnected tokens,
+users in recovery, pending signups count
+
+USERS TAB:
+Sub-tabs: Active Users | Pending Signups
+
+ACTIVE USERS:
+Search + filter (All/Active/Recovery/Copy/Profile)
+User cards with:
+- Username, status, profile badge
+- Strategy assigned
+- Bot running/paused
+- Recovery mode badge if active
+- Win streak badge if active
+- Adaptive intelligence progress (X/50)
+- Peak balance and current drawdown %
+- Copy trading enrolled badge
+- Deriv connection status
+- Three-dot menu:
+  Activate/Deactivate
+  Change Profile
+  Assign Strategy
+  Enroll in Copy Trading
+  View Dashboard
+  Reset Password
+  Delete
+
+Create User FAB button:
+Opens full-screen modal
+Auto-generate password (AlgoXXXX!)
+Show copyable credentials after creation
+
+PENDING SIGNUPS:
+Table: Username | Email | Country | Date | Actions
+Approve button → sends approval email
+Reject button → sends rejection email
+"Export CSV" button downloads signups.csv
+Badge count on tab showing pending count
+
+STRATEGIES TAB:
+Strategy library list:
+Each card shows:
+- Name, type, status badge
+- Users assigned count
+- Win rate, total trades
+- Circuit breaker status
+- Sessions active
+- Performance sparkline
+
+"Create Strategy" button opens multi-step form:
+Step 1: Name, description, type
+Step 2: Timeframes
+Step 3: Sessions (with quality badges)
+Step 4: Score thresholds + limits
+Step 5: Risk configuration
+Step 6: Advanced feature toggles
+Step 7: Review with live logic summary panel
+  (right panel updates in plain English)
+
+Strategy detail page:
+Full performance dashboard
+Win rate chart over time
+Session breakdown
+Indicator accuracy bars
+Assigned users list with their win rates
+Circuit breaker history
+Pause/Reactivate/Archive buttons
+"Run Backtest" button → goes to backtest tab
+
+COPY TRADING TAB:
+"Place Copy Trade" panel:
+Direction: BUY | SELL
+User selector: searchable checklist
+Risk multiplier: 1× | 1.25× | 1.5×
+Force override: global toggle + per-user
+
+Live preview (3 columns, loads as you select):
+Will Receive | Will Be Skipped | Force Available
+Bottom summary: users, capital, exposure
+
+Active copy trade monitor
+Copy trade history table
+Per-user copy stats
+
+BACKTEST TAB:
+Strategy selector dropdown
+Date range selector (default 30 days)
+"Run Backtest" button
+Progress indicator while running
+
+Results (side-by-side):
+Left: Backtest results
+Right: Current live performance
+
+Metrics compared:
+Win rate | Profit factor | Max drawdown
+Avg score | Trades/day | Best session
+Each metric highlighted green/red vs live
+
+Equity curve chart (backtest line vs live line)
+Score range performance table
+Session breakdown comparison
+Indicator accuracy comparison
+Best/worst trades
+
+"Export PDF" button
+"Deploy Strategy" button (with confirmation)
+
+SETTINGS TAB:
+Master bot ON/OFF (prominent, red/green bg)
+System info: uptime, trades, DB size
+SMTP email configuration
+Signups CSV download
+Auth logs link
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 21 — PUSH NOTIFICATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Request permission on first login post-setup.
+Fall back to in-app toast notifications if denied.
+
+Notify on all original events PLUS:
+- Recovery mode entered
+- Recovery mode exited (with % recovered)
+- Adaptive intelligence activated (50 trades)
+- Win streak caution activated
+- Win streak caution lifted
+- Strategy circuit breaker triggered
+- Copy trade received (with details)
+- Copy trade skipped (with reason)
+- Auto-compound stake updated (new amount)
+- Spike filter activated
+- Consolidation breakout detected
+- Momentum extension activated
+- Range extreme warning
+- Signup approved (to admin)
+- New signup request (to admin)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 22 — RESPONSIVE + PERFORMANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Mobile first (375px minimum).
+Breakpoints: 0-767px | 768-1023px | 1024px+
+
+Tablet: collapsible left sidebar
+Desktop: full 3-column layout
+
+Mobile rules:
+No horizontal scroll ever
+Min font: 14px
+Min tap target: 44×44px
+All modals: full screen
+Safe area padding for iPhone
+
+Performance:
+Lazy load chart
+Skeleton loading screens
+Max 100 candles on mobile, 200 desktop
+Debounce price UI updates: 1/second mobile
+SSE auto-reconnect on background/foreground
+Target load: <3 seconds on 4G
+
+Micro-animations:
+Price tick: 150ms smooth transition
+Bot toggle: spring animation
+Score bars: 500ms fill animation
+Session pulse: breathing 2s loop
+Kill switch: slow red pulse when active
+New trade: slide-in from top 300ms
+Tab switch: instant (no lag)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 23 — SECURITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Rate limiting: auth 10/min, user 60/min, admin 30/min
+Input validation and sanitization on all inputs
+Deriv tokens: AES-256 encrypted before storage
+JWT: httpOnly cookies, never localStorage
+Admin actions: fully logged with old/new values
+SQL: parameterized queries only
+CORS: own origin only
+Helmet.js: security headers
+Users see only their own data
+Admin routes: server-side role check always
+
+ENV VARIABLES:
+JWT_SECRET (min 32 chars)
+ENCRYPTION_KEY (32 chars for AES)
+SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+PORT=3001
+APP_URL (for email links)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 24 — CRITICAL TECHNICAL NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. R_75 SYMBOL: Use EXACTLY "R_75"
+   Real price: 38,000-42,000 range
+   Validate on every tick
+
+2. PAPER TRADING: Works with NO token
+   Connect without authorize call
+   Public tick stream needs no auth
+
+3. SCORING: Never show 0.0/10
+   Show loading state until 50 candles ready
+
+4. LOGOUT: Clear httpOnly cookie server-side
+   Clear React state client-side
+   navigate('/login', {replace: true})
+
+5. KILL SWITCH: Always show reset button
+   Does not persist across server restarts
+
+6. NO FORM TAGS IN REACT:
+   Use div + onClick handlers only
+
+7. NO LOCALSTORAGE FOR AUTH:
+   httpOnly cookies for JWT only
+
+8. EVERY PAGE: Must work at 375px width
+
+9. CLEAN10TEST USER: Auto-created in seed
+   Paper trading mode, safe profile
+   $5,000 balance, strategy: V75 Sniper
+
+10. BUILD ORDER:
+    1. Database + seed data
+    2. Email service
+    3. Auth routes + middleware
+    4. Deriv service (test tick stream first)
+    5. Scoring engine (test with sample data)
+    6. Sessions engine
+    7. Bot engine
+    8. Copy trading service
+    9. Backtest service
+    10. All API routes
+    11. SSE streaming
+    12. Landing page
+    13. Login + signup pages
+    14. Setup wizard
+    15. User dashboard
+    16. Admin panel
+    17. Push notifications
+    18. Polish + animations
+    19. Full integration test
+    20. Verify R_75 price is correct range

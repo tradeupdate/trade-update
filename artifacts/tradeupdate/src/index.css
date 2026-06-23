@@ -1,0 +1,76 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent-teal);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-card-border: var(--border);
+
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--foreground);
+  --color-popover-border: var(--border);
+
+  --color-primary: var(--accent-teal);
+  --color-primary-foreground: #000000;
+  --color-primary-border: var(--accent-teal);
+
+  --color-secondary: var(--card);
+  --color-secondary-foreground: var(--foreground);
+  --color-secondary-border: var(--border);
+
+  --color-muted: var(--border);
+  --color-muted-foreground: var(--text-secondary);
+  --color-muted-border: var(--border);
+
+  --color-accent: var(--accent-teal);
+  --color-accent-foreground: #000000;
+  --color-accent-border: var(--accent-teal);
+
+  --color-destructive: var(--accent-red);
+  --color-destructive-foreground: #ffffff;
+  --color-destructive-border: var(--accent-red);
+
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+}
+
+:root, .dark {
+  --background: #080A0F;
+  --foreground: #F0F2FF;
+  --card: #0F1117;
+  --border: #1C1F2E;
+  
+  --accent-teal: #00D4A4;
+  --accent-red: #FF4060;
+  --accent-gold: #FFB347;
+  --accent-amber: #F59E0B;
+  
+  --text-primary: #F0F2FF;
+  --text-secondary: #8890AA;
+
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+}

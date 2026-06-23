@@ -1,0 +1,2 @@
+- [API response shapes](api-response-shapes.md) — exact field names from generated Zod types for all major endpoints
+- [Hook call conventions](hook-call-conventions.md) — query hooks with URL params require undefined as first arg when no params
