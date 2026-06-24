@@ -9,6 +9,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { derivService } from "../services/deriv.js";
 import { botManager } from "../services/bot.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
+import { getCurrentSession, getNextSession, SESSIONS } from "../services/sessions.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -41,14 +42,6 @@ router.get("/dashboard", async (req, res) => {
 
     const bot = botManager.getOrCreate(userId, user.tradingMode || "paper");
 
-    // Compute streaks from recent trades
-    let winStreak = 0, lossStreak = 0;
-    for (const t of recentTrades) {
-      if (t.status !== "closed") continue;
-      if ((t.pnl || 0) > 0) { winStreak++; lossStreak = 0; }
-      else { lossStreak++; winStreak = 0; }
-    }
-
     res.json({
       user: {
         id: user.id, username: user.username, tradingProfile: user.tradingProfile,
@@ -56,6 +49,7 @@ router.get("/dashboard", async (req, res) => {
         peakBalance: user.peakBalance, hasDerivToken: !!user.derivTokenEncrypted,
         strategyId: user.strategyId, autoCompoundEnabled: user.autoCompoundEnabled === 1,
         adaptiveIntelligenceEnabled: user.adaptiveIntelligenceEnabled === 1,
+        copyTradingEnabled: user.copyTradingEnabled === 1,
       },
       botStatus: {
         isRunning: bot.isRunning, killSwitchActive: bot.killSwitchActive,
@@ -64,15 +58,17 @@ router.get("/dashboard", async (req, res) => {
         spikeDetected: bot.spikeDetected, consolidationDetected: bot.consolidationDetected,
         strategyCircuitBreakerActive: bot.strategyCircuitBreakerActive,
         rangeContext: bot.rangeContext, cooldownSecondsRemaining: bot.cooldownSecondsRemaining,
-        tradingMode: bot.tradingMode,
+        tradingMode: bot.tradingMode, consecutiveLosses: bot.consecutiveLosses,
+        consecutiveWins: bot.consecutiveWins, dailyPnl: bot.dailyPnl,
+        todayTrades: bot.todayTrades, recoveryModeActive: bot.recoveryModeActive,
+        winStreakCautionActive: bot.winStreakCautionActive,
+        lastSignalScore: bot.lastSignalScore,
       },
       recentTrades,
       sessionPerformance: sessionPerf,
       dailyPnl,
       todayTrades: todayTotal,
       todayWins,
-      winStreak,
-      lossStreak,
     });
   } catch (err) {
     logger.error({ err }, "Dashboard error");
@@ -89,9 +85,19 @@ router.get("/trades", async (req, res) => {
     const offset = (page - 1) * limit;
     const filter = req.query["filter"] as string;
 
-    let query = db.select().from(tradesTable).where(eq(tradesTable.userId, userId));
+    let whereClause: any = eq(tradesTable.userId, userId);
+    if (filter === "win") {
+      whereClause = and(eq(tradesTable.userId, userId), sql`pnl > 0`);
+    } else if (filter === "loss") {
+      whereClause = and(eq(tradesTable.userId, userId), sql`pnl < 0`);
+    } else if (filter === "paper") {
+      whereClause = and(eq(tradesTable.userId, userId), eq(tradesTable.isPaper, 1));
+    } else if (filter === "copy") {
+      whereClause = and(eq(tradesTable.userId, userId), eq(tradesTable.isCopyTrade, 1));
+    }
+
     const trades = await db.select().from(tradesTable)
-      .where(eq(tradesTable.userId, userId))
+      .where(whereClause)
       .orderBy(desc(tradesTable.openedAt))
       .limit(limit).offset(offset);
 
@@ -136,65 +142,60 @@ router.get("/stats", async (req, res) => {
     const winRate = allTrades.length ? (wins.length / allTrades.length) * 100 : 0;
     const avgScore = allTrades.length ? allTrades.reduce((s, t) => s + (t.scoreTotal || 0), 0) / allTrades.length : 0;
 
-    // Build equity curve (daily)
-    const equityCurveMap = new Map<string, number>();
+    // Build equity curve
+    const sorted = [...allTrades].sort((a, b) => (a.openedAt || 0) - (b.openedAt || 0));
     let running = 5000;
-    for (const t of allTrades.sort((a, b) => (a.openedAt || 0) - (b.openedAt || 0))) {
-      const date = new Date((t.openedAt || 0) * 1000).toISOString().split("T")[0] as string;
+    const equityCurve = sorted.map(t => {
       running += (t.pnl || 0);
-      equityCurveMap.set(date, running);
-    }
-    const equityCurve = Array.from(equityCurveMap.entries()).map(([date, value]) => ({ date, value }));
+      return {
+        time: t.closedAt || t.openedAt || 0,
+        balance: Math.round(running * 100) / 100,
+        date: new Date((t.closedAt || t.openedAt || 0) * 1000).toISOString().split("T")[0]
+      };
+    });
 
-    // Session breakdown
     const sessionPerf = await db.select().from(sessionPerformanceTable)
       .where(eq(sessionPerformanceTable.userId, userId));
 
-    // Score range performance
-    const scoreRanges = [
-      { label: "38-42", min: 38, max: 42 },
-      { label: "42-46", min: 42, max: 46 },
-      { label: "46-50", min: 46, max: 50 },
-    ];
-    const scoreRangePerformance = scoreRanges.map(range => {
-      const rangeT = allTrades.filter(t => (t.scoreTotal || 0) >= range.min && (t.scoreTotal || 0) < range.max);
-      const w = rangeT.filter(t => (t.pnl || 0) > 0).length;
-      return { label: range.label, trades: rangeT.length, winRate: rangeT.length ? (w / rangeT.length) * 100 : 0 };
-    });
-
-    // Indicator accuracy
-    const indicatorAccuracy = {
-      rsi: computeIndicatorAccuracy(allTrades, "rsiAtEntry", wins.map(t => t.id)),
-      stoch: computeIndicatorAccuracy(allTrades, "stochAtEntry", wins.map(t => t.id)),
-    };
-
-    // Win/loss streak
-    let winStreak = 0, lossStreak = 0, maxWin = 0, maxLoss = 0, curWin = 0, curLoss = 0;
-    for (const t of allTrades.sort((a, b) => (a.openedAt || 0) - (b.openedAt || 0))) {
-      if ((t.pnl || 0) > 0) { curWin++; curLoss = 0; maxWin = Math.max(maxWin, curWin); }
-      else { curLoss++; curWin = 0; maxLoss = Math.max(maxLoss, curLoss); }
+    // Session breakdown from trades
+    const sessionBreakdown: Record<string, { trades: number; wins: number; totalPnl: number }> = {};
+    for (const t of allTrades) {
+      const sn = t.sessionName || "Unknown";
+      if (!sessionBreakdown[sn]) sessionBreakdown[sn] = { trades: 0, wins: 0, totalPnl: 0 };
+      sessionBreakdown[sn].trades++;
+      if ((t.pnl || 0) > 0) sessionBreakdown[sn].wins++;
+      sessionBreakdown[sn].totalPnl += t.pnl || 0;
     }
+    const sessionStats = Object.entries(sessionBreakdown).map(([name, d]) => ({
+      name, trades: d.trades, wins: d.wins,
+      winRate: d.trades ? Math.round((d.wins / d.trades) * 100 * 10) / 10 : 0,
+      avgPnl: d.trades ? Math.round((d.totalPnl / d.trades) * 100) / 100 : 0,
+    }));
+
+    const avgDuration = allTrades.length ? allTrades.reduce((s, t) => s + (t.durationMinutes || 0), 0) / allTrades.length : 0;
+    const largestWin = wins.length ? Math.max(...wins.map(t => t.pnl || 0)) : 0;
+    const largestLoss = losses.length ? Math.min(...losses.map(t => t.pnl || 0)) : 0;
+    const avgWin = wins.length ? grossProfit / wins.length : 0;
+    const avgLoss = losses.length ? -grossLoss / losses.length : 0;
 
     res.json({
       totalTrades: allTrades.length, wins: wins.length, losses: losses.length,
-      winRate: Math.round(winRate * 10) / 10, profitFactor: Math.round(profitFactor * 100) / 100,
-      totalPnl: Math.round(totalPnl * 100) / 100, avgScore: Math.round(avgScore * 10) / 10,
-      equityCurve, sessionPerformance: sessionPerf,
-      scoreRangePerformance, indicatorAccuracy,
-      winStreak: maxWin, lossStreak: maxLoss,
+      winRate: Math.round(winRate * 10) / 10,
+      profitFactor: Math.round(profitFactor * 100) / 100,
+      totalPnl: Math.round(totalPnl * 100) / 100,
+      avgScore: Math.round(avgScore * 10) / 10,
+      avgDuration: Math.round(avgDuration * 10) / 10,
+      largestWin: Math.round(largestWin * 100) / 100,
+      largestLoss: Math.round(largestLoss * 100) / 100,
+      avgWin: Math.round(avgWin * 100) / 100,
+      avgLoss: Math.round(avgLoss * 100) / 100,
+      equityCurve, sessionPerformance: sessionPerf, sessionStats,
     });
   } catch (err) {
     logger.error({ err }, "Get stats error");
     res.status(500).json({ error: "Server error" });
   }
 });
-
-function computeIndicatorAccuracy(trades: any[], field: string, winIds: string[]): number {
-  const withField = trades.filter(t => t[field] !== null);
-  if (!withField.length) return 0;
-  const wins = withField.filter(t => winIds.includes(t.id)).length;
-  return Math.round((wins / withField.length) * 100 * 10) / 10;
-}
 
 // Bot status
 router.get("/bot/status", async (req, res) => {
@@ -207,15 +208,16 @@ router.get("/bot/status", async (req, res) => {
     res.json({
       isRunning: state.isRunning, killSwitchActive: state.killSwitchActive,
       tradingMode: state.tradingMode, todayTrades: state.todayTrades,
-      consecutiveLosses: state.consecutiveLosses, dailyPnl: state.dailyPnl,
-      currentDrawdown: state.currentDrawdown, recoveryModeActive: state.recoveryModeActive,
-      winStreakCautionActive: state.winStreakCautionActive,
+      consecutiveLosses: state.consecutiveLosses, consecutiveWins: state.consecutiveWins,
+      dailyPnl: state.dailyPnl, currentDrawdown: state.currentDrawdown,
+      recoveryModeActive: state.recoveryModeActive, winStreakCautionActive: state.winStreakCautionActive,
       pauseReason: state.pauseReason, currentScore: state.currentScore,
       openTrade: state.openTrade, scoreBreakdown: state.scoreBreakdown,
       spikeDetected: state.spikeDetected, consolidationDetected: state.consolidationDetected,
       strategyCircuitBreakerActive: state.strategyCircuitBreakerActive,
       cooldownSecondsRemaining: state.cooldownSecondsRemaining,
       sessionMultiplier: state.sessionMultiplier, rangeContext: state.rangeContext,
+      lastSignalScore: state.lastSignalScore,
     });
   } catch (err) {
     logger.error({ err }, "Bot status error");
@@ -334,36 +336,147 @@ router.get("/candles", (req, res) => {
 // Latest tick
 router.get("/tick", (_req, res) => {
   const tick = derivService.getLatestTick();
-  const prev = tick.price - (Math.random() - 0.5) * 20;
   res.json({
     price: tick.price,
     timestamp: tick.timestamp,
-    change: Math.round((tick.price - prev) * 100) / 100,
-    direction: tick.price >= prev ? "up" : "down",
+    direction: "up",
   });
 });
 
-// SSE stream
-router.get("/stream", (req, res) => {
+// SSE stream — full real-time feed
+router.get("/stream", async (req, res) => {
   const userId = req.user!.userId;
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  const removeClient = botManager.addSseClient(userId, (data) => res.write(data));
-
-  // Send tick updates
-  const removeTick = derivService.onTick((tick) => {
-    res.write(`data: ${JSON.stringify({ type: "tick", ...tick })}\n\n`);
+  // Register as SSE client for bot broadcasts
+  const removeClient = botManager.addSseClient(userId, (data) => {
+    try { res.write(data); } catch {}
   });
 
+  // Initialise bot state
+  let user: any = null;
+  try {
+    const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    user = rows[0];
+    if (user) botManager.getOrCreate(userId, user.tradingMode || "paper");
+  } catch {}
+
+  // Tick broadcast — throttle to 1 per second
+  let lastTickPrice = 0;
+  const tickInterval = setInterval(() => {
+    try {
+      const tick = derivService.getLatestTick();
+      const direction = tick.price >= lastTickPrice ? "up" : "down";
+      const payload = { price: tick.price, direction, time: tick.timestamp };
+      res.write(`data: ${JSON.stringify({ type: "tick", payload })}\n\n`);
+      lastTickPrice = tick.price;
+    } catch {}
+  }, 1000);
+
+  // Bot state + scores broadcast every 5 seconds
+  const stateInterval = setInterval(() => {
+    try {
+      const state = botManager.get(userId);
+      if (!state) return;
+
+      botManager.broadcastBotEvent(userId, state);
+
+      if (state.lastScoreResult) {
+        const r = state.lastScoreResult;
+        botManager.broadcastToUser(userId, "scores", {
+          total: r.total, trend: r.trend, volatility: r.volatility,
+          timing: r.timing, pullback: r.pullback, risk: r.risk,
+          signal: r.direction, direction: r.direction, loading: false,
+          ema9: r.ema9, ema21: r.ema21, adx: r.adx, rsi: r.rsi,
+          bbUpper: r.bbUpper, bbLower: r.bbLower, stochK: r.stochK,
+          macdHistogram: r.macdHistogram, rangeContext: r.rangeContext,
+          consolidation: r.consolidationDetected, spikeDetected: r.spikeDetected,
+          trendDirection: r.trendDirection, bandTouched: r.bandTouched,
+          pullbackZone: r.pullbackZoneActive, rejectionReason: state.pauseReason,
+        });
+      } else if (state.isRunning) {
+        const loaded = derivService.getCandles("15m", 200).length;
+        botManager.broadcastToUser(userId, "scores", {
+          loading: true, message: "Gathering market data...", candlesLoaded: loaded
+        });
+      }
+    } catch {}
+  }, 5000);
+
+  // Session info broadcast every 10 seconds
+  const sessionInterval = setInterval(() => {
+    try {
+      const current = getCurrentSession();
+      const next = getNextSession();
+      const nowUtcH = new Date().getUTCHours() + new Date().getUTCMinutes() / 60;
+      const all = SESSIONS.map(s => ({
+        name: s.name, quality: s.quality,
+        isActive: nowUtcH >= s.startUtcHour && nowUtcH < s.endUtcHour,
+        startUtcHour: s.startUtcHour, endUtcHour: s.endUtcHour,
+      }));
+      botManager.broadcastToUser(userId, "session", {
+        current: current ? { name: current.name, quality: current.quality } : null,
+        next: next ? { name: next.session.name, minutesUntil: next.minutesUntil } : null,
+        all,
+      });
+    } catch {}
+  }, 10000);
+
+  // Stats broadcast every 15 seconds
+  const statsInterval = setInterval(async () => {
+    try {
+      const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+      const u = rows[0];
+      const state = botManager.get(userId);
+      if (!u) return;
+      const balance = u.accountBalance || 5000;
+      const peak = u.peakBalance || balance;
+      const drawdown = (peak - balance) / peak;
+      botManager.broadcastToUser(userId, "stats", {
+        balance, equity: balance + (state?.openTrade?.pnl || 0),
+        dailyPnl: state?.dailyPnl || 0,
+        dailyPnlPercent: peak > 0 ? (state?.dailyPnl || 0) / peak * 100 : 0,
+        peakBalance: peak, currentDrawdown: drawdown,
+      });
+    } catch {}
+  }, 15000);
+
   // Keepalive
-  const keepalive = setInterval(() => res.write(": ping\n\n"), 20000);
+  const keepalive = setInterval(() => {
+    try { res.write(": ping\n\n"); } catch {}
+  }, 20000);
+
+  // Send initial session + connection-established immediately
+  setTimeout(() => {
+    try {
+      const current = getCurrentSession();
+      const next = getNextSession();
+      const nowUtcH = new Date().getUTCHours() + new Date().getUTCMinutes() / 60;
+      const all = SESSIONS.map(s => ({
+        name: s.name, quality: s.quality,
+        isActive: nowUtcH >= s.startUtcHour && nowUtcH < s.endUtcHour,
+        startUtcHour: s.startUtcHour, endUtcHour: s.endUtcHour,
+      }));
+      res.write(`data: ${JSON.stringify({ type: "session", payload: {
+        current: current ? { name: current.name, quality: current.quality } : null,
+        next: next ? { name: next.session.name, minutesUntil: next.minutesUntil } : null,
+        all,
+      }})}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "connected", payload: { userId } })}\n\n`);
+    } catch {}
+  }, 100);
 
   req.on("close", () => {
     removeClient();
-    removeTick();
+    clearInterval(tickInterval);
+    clearInterval(stateInterval);
+    clearInterval(sessionInterval);
+    clearInterval(statsInterval);
     clearInterval(keepalive);
   });
 });

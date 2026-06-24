@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
-import { 
-  useGetMe, 
-  useGetBotStatus, 
+import {
+  useGetMe,
   useGetCandles,
   useGetUserTrades,
   useGetUserStats,
@@ -13,7 +12,10 @@ import {
   useLogout
 } from "@workspace/api-client-react";
 import { Logo } from "@/components/ui/logo";
-import { Loader2, Power, Pause, LogOut, Home, BarChart2, List, Settings as SettingsIcon, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import {
+  Loader2, Power, Pause, LogOut, Home, BarChart2, List,
+  Settings as SettingsIcon, TrendingUp, TrendingDown, Brain
+} from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,32 +24,87 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   LineChart, Line
 } from "recharts";
+import { useSSE } from "@/hooks/use-sse";
 
 type Timeframe = "1m" | "5m" | "15m";
 type TradeFilter = "all" | "win" | "loss" | "paper" | "copy";
 
+function ScoreBar({ label, value, max = 12 }: { label: string; value: number; max?: number }) {
+  const pct = Math.min(100, (value / max) * 100);
+  const color = pct >= 66 ? "#00D4A4" : pct >= 33 ? "#FFB347" : "#FF4060";
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-text-secondary w-16 shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
+      </div>
+      <span className="text-xs font-mono font-bold w-8 text-right" style={{ color }}>{value.toFixed(1)}</span>
+    </div>
+  );
+}
+
+function StatusBanner({ bot }: { bot: any }) {
+  if (!bot) return null;
+
+  let msg = "";
+  let cls = "";
+
+  if (bot.killSwitchActive) {
+    msg = "KILL SWITCH ACTIVE — Bot halted";
+    cls = "bg-accent-red/10 text-accent-red";
+  } else if (bot.dailyLossHit) {
+    msg = "DAILY LOSS LIMIT REACHED — Bot stopped";
+    cls = "bg-accent-red/10 text-accent-red";
+  } else if (bot.strategyCircuitBreakerActive) {
+    msg = "STRATEGY PAUSED BY ADMIN";
+    cls = "bg-accent-red/10 text-accent-red";
+  } else if (bot.recoveryMode) {
+    msg = "RECOVERY MODE — Stake reduced 50%";
+    cls = "bg-yellow-500/10 text-yellow-400";
+  } else if (bot.winStreakCaution) {
+    msg = "WIN STREAK CAUTION — Stake reduced 20%";
+    cls = "bg-orange-500/10 text-orange-400";
+  } else if (bot.pauseReason && !bot.isRunning) {
+    msg = bot.pauseReason.toUpperCase();
+    cls = "bg-text-secondary/10 text-text-secondary";
+  } else {
+    return null;
+  }
+
+  return (
+    <div className={`py-1 text-center text-xs font-medium uppercase tracking-wide ${cls}`}>
+      {msg}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { data: user } = useGetMe();
-  const [price, setPrice] = useState(0);
-  const [priceDir, setPriceDir] = useState<"up" | "down" | "">("");
   const [activeTab, setActiveTab] = useState("home");
-  const [timeframe, setTimeframe] = useState<Timeframe>("1m");
+  const [timeframe, setTimeframe] = useState<Timeframe>("5m");
   const [tradeFilter, setTradeFilter] = useState<TradeFilter>("all");
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
-  const sseRef = useRef<EventSource | null>(null);
 
-  const { data: botStatus } = useGetBotStatus({
-    query: {
-      queryKey: getGetBotStatusQueryKey(),
-      refetchInterval: 5000
+  // SSE hook — single source of truth for real-time data
+  const sse = useSSE(true);
+
+  // Refresh React Query cache on trade events
+  useEffect(() => {
+    if (!sse.lastTrade) return;
+    const action = sse.lastTrade.action;
+    if (action === "opened" || action === "closed") {
+      queryClient.invalidateQueries({ queryKey: getGetBotStatusQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["userTrades"] });
+      queryClient.invalidateQueries({ queryKey: ["userStats"] });
     }
-  });
+  }, [sse.lastTrade, queryClient]);
 
   const { data: dashboardData } = useGetUserDashboard({
     query: {
       queryKey: getGetUserDashboardQueryKey(),
-      refetchInterval: 8000
+      refetchInterval: 15000,
     }
   });
 
@@ -56,14 +113,14 @@ export default function Dashboard() {
     {
       query: {
         queryKey: ["candles", timeframe],
-        refetchInterval: activeTab === "chart" ? 5000 : false,
+        refetchInterval: activeTab === "chart" ? 30000 : false,
         enabled: activeTab === "chart"
       }
     }
   );
 
   const { data: tradesData, isLoading: tradesLoading } = useGetUserTrades(
-    { filter: tradeFilter, limit: 30 },
+    { filter: tradeFilter, limit: 50 },
     {
       query: {
         queryKey: ["userTrades", tradeFilter],
@@ -75,65 +132,91 @@ export default function Dashboard() {
   const { data: stats } = useGetUserStats({
     query: {
       queryKey: ["userStats"],
-      enabled: activeTab === "trades"
+      enabled: activeTab === "trades",
+      refetchInterval: activeTab === "trades" ? 30000 : false,
     }
   });
 
   const toggleBot = useToggleBot();
   const logout = useLogout();
 
-  // SSE streaming for live tick updates
-  useEffect(() => {
-    const es = new EventSource("/api/user/stream", { withCredentials: true });
-    sseRef.current = es;
-
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === "tick") {
-          setPrice(data.price);
-          setPriceDir(data.direction || "");
-          setTimeout(() => setPriceDir(""), 300);
-        } else if (data.type === "trade_opened" || data.type === "trade_closed" || data.type === "bot_status") {
-          queryClient.invalidateQueries({ queryKey: getGetBotStatusQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
-          queryClient.invalidateQueries({ queryKey: ["userTrades"] });
-        }
-      } catch {
-        // ignore parse errors (keepalive pings)
-      }
-    };
-
-    es.onerror = () => {
-      // SSE reconnects automatically on error
-    };
-
-    return () => {
-      es.close();
-      sseRef.current = null;
-    };
-  }, [queryClient]);
+  // Use SSE data preferentially, fall back to polling
+  const botData = sse.bot ?? dashboardData?.botStatus;
+  const isRunning = botData?.isRunning ?? false;
+  const price = sse.tick?.price ?? 0;
+  const priceDir = sse.tick?.direction ?? "";
 
   const handleLogout = () => {
     logout.mutate(undefined, {
-      onSuccess: () => setLocation("/login")
+      onSuccess: () => {
+        setLocation("/login");
+        setTimeout(() => window.location.reload(), 100);
+      }
     });
   };
 
-  const isRunning = botStatus?.isRunning ?? false;
+  // Connection dot color
+  const connDotClass = !sse.connected
+    ? "bg-accent-red"
+    : sse.isStale
+    ? "bg-yellow-400"
+    : sse.scores?.loading
+    ? "bg-yellow-400 animate-pulse"
+    : "bg-primary animate-pulse";
 
+  // Chart data
   const chartData = candles?.candles?.map((c) => ({
-    time: new Date(c.time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    time: new Date(c.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     close: c.close,
     open: c.open,
     high: c.high,
     low: c.low,
   })) ?? [];
 
-  const equityData = stats?.equityCurve?.map((e) => ({
-    time: new Date(e.time * 1000).toLocaleDateString([], { month: "short", day: "numeric" }),
-    balance: e.balance
+  // Equity curve from stats
+  const equityData = (stats as any)?.equityCurve?.map((e: any) => ({
+    time: e.date ?? new Date(e.time * 1000).toLocaleDateString([], { month: "short", day: "numeric" }),
+    balance: e.balance ?? e.value ?? 0,
   })) ?? [];
+
+  // Session countdown display
+  const [sessionCountdown, setSessionCountdown] = useState("");
+  useEffect(() => {
+    const t = setInterval(() => {
+      const next = sse.session?.next;
+      if (!next) { setSessionCountdown(""); return; }
+      const totalSecs = next.minutesUntil * 60;
+      if (totalSecs <= 0) { setSessionCountdown(""); return; }
+      const h = Math.floor(totalSecs / 3600);
+      const m = Math.floor((totalSecs % 3600) / 60);
+      const s = totalSecs % 60;
+      if (h > 0) setSessionCountdown(`${h}h ${m}m`);
+      else setSessionCountdown(`${m}m ${s}s`);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [sse.session]);
+
+  // Cooldown countdown
+  const [cooldownDisplay, setCooldownDisplay] = useState<string | null>(null);
+  useEffect(() => {
+    const rem = botData?.cooldownSecondsRemaining;
+    if (!rem) { setCooldownDisplay(null); return; }
+    const m = Math.floor(rem / 60);
+    const s = rem % 60;
+    setCooldownDisplay(`${m}m ${s}s`);
+    const t = setInterval(() => {
+      setCooldownDisplay(prev => {
+        if (!prev) return null;
+        const [mStr, sStr] = prev.split("m ");
+        const mVal = parseInt(mStr);
+        const sVal = parseInt(sStr);
+        let total = mVal * 60 + sVal - 1;
+        if (total <= 0) return "Available now";
+        return `${Math.floor(total / 60)}m ${total % 60}s`;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [botData?.cooldownSecondsRemaining]);
 
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background text-foreground pb-16">
@@ -145,11 +228,11 @@ export default function Dashboard() {
           <span className={`text-lg font-bold tabular-nums transition-colors duration-150 ${
             priceDir === "up" ? "text-primary" : priceDir === "down" ? "text-accent-red" : "text-foreground"
           }`}>
-            {price > 0 ? price.toFixed(2) : "---"}
+            {price > 0 ? price.toFixed(2) : "———"}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${isRunning ? "bg-primary animate-pulse" : "bg-text-secondary"}`} />
+          <div className={`w-2 h-2 rounded-full ${connDotClass}`} title={sse.connected ? "Connected" : "Disconnected"} />
           <Button
             variant="ghost"
             size="icon"
@@ -162,19 +245,11 @@ export default function Dashboard() {
       </header>
 
       {/* Status banner */}
-      {(botStatus?.killSwitchActive || botStatus?.recoveryModeActive || botStatus?.pauseReason) && (
-        <div className={`mt-[60px] py-1 text-center text-xs font-medium uppercase tracking-wide ${
-          botStatus.killSwitchActive ? "bg-accent-red/10 text-accent-red" :
-          botStatus.recoveryModeActive ? "bg-yellow-500/10 text-yellow-400" :
-          "bg-text-secondary/10 text-text-secondary"
-        }`}>
-          {botStatus.killSwitchActive ? "KILL SWITCH ACTIVE" :
-           botStatus.recoveryModeActive ? "RECOVERY MODE" :
-           botStatus.pauseReason}
-        </div>
-      )}
+      <div className="mt-[60px]">
+        <StatusBanner bot={botData} />
+      </div>
 
-      <main className={`flex-1 p-4 ${!(botStatus?.killSwitchActive || botStatus?.recoveryModeActive || botStatus?.pauseReason) ? "mt-[60px]" : ""}`}>
+      <main className="flex-1 p-4">
 
         {/* ─── HOME TAB ─── */}
         {activeTab === "home" && (
@@ -189,25 +264,25 @@ export default function Dashboard() {
               </Card>
               <Card className="bg-card border-border p-4">
                 <div className="text-xs text-text-secondary mb-1">Today P&L</div>
-                <div className={`text-xl font-bold tabular-nums ${(dashboardData?.botStatus?.dailyPnl ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
-                  {(dashboardData?.botStatus?.dailyPnl ?? 0) >= 0 ? "+" : ""}
-                  {(dashboardData?.botStatus?.dailyPnl ?? 0).toFixed(2)}
+                <div className={`text-xl font-bold tabular-nums ${(botData?.dailyPnl ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
+                  {(botData?.dailyPnl ?? 0) >= 0 ? "+" : ""}
+                  {(botData?.dailyPnl ?? 0).toFixed(2)}
                 </div>
               </Card>
               <Card className="bg-card border-border p-4">
-                <div className="text-xs text-text-secondary mb-1">Win Streak</div>
+                <div className="text-xs text-text-secondary mb-1">Streak</div>
                 <div className="text-xl font-bold tabular-nums">
-                  {(dashboardData?.botStatus?.consecutiveWins ?? 0) > 0 ? (
-                    <span className="text-primary">+{dashboardData!.botStatus.consecutiveWins}W</span>
-                  ) : (dashboardData?.botStatus?.consecutiveLosses ?? 0) > 0 ? (
-                    <span className="text-accent-red">-{dashboardData!.botStatus.consecutiveLosses}L</span>
+                  {(botData?.consecutiveWins ?? 0) > 0 ? (
+                    <span className="text-primary">+{botData!.consecutiveWins}W</span>
+                  ) : (botData?.consecutiveLosses ?? 0) > 0 ? (
+                    <span className="text-accent-red">-{botData!.consecutiveLosses}L</span>
                   ) : "—"}
                 </div>
               </Card>
               <Card className="bg-card border-border p-4">
                 <div className="text-xs text-text-secondary mb-1">Trades Today</div>
                 <div className="text-xl font-bold tabular-nums">
-                  {dashboardData?.botStatus?.todayTrades ?? 0}
+                  {botData?.todayTrades ?? 0}
                 </div>
               </Card>
             </div>
@@ -239,54 +314,102 @@ export default function Dashboard() {
                 )}
               </Button>
               <div className="text-lg font-bold">{isRunning ? "BOT ACTIVE" : "BOT PAUSED"}</div>
-              <div className="text-sm text-text-secondary mt-1">
-                {dashboardData?.user?.tradingProfile
-                  ? dashboardData.user.tradingProfile.charAt(0).toUpperCase() + dashboardData.user.tradingProfile.slice(1)
-                  : "No Profile"}
+              {botData?.pauseReason && !isRunning && (
+                <div className="text-xs text-text-secondary mt-1 text-center max-w-[200px]">
+                  {cooldownDisplay && botData.pauseReason.includes("Cooldown")
+                    ? `Cooldown — ${cooldownDisplay}`
+                    : botData.pauseReason}
+                </div>
+              )}
+              <div className="text-sm text-text-secondary mt-1 capitalize">
+                {dashboardData?.user?.tradingProfile ?? "No Profile"} · {dashboardData?.user?.tradingMode ?? "paper"}
               </div>
             </Card>
 
-            {/* Open trade card */}
-            {botStatus?.openTrade && (
+            {/* Open trade card — live from SSE bot.openTrade */}
+            {botData?.openTrade && (
               <Card className="bg-card border-border p-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-sm font-medium text-text-secondary">Open Trade</span>
-                  <Badge className={`border-0 ${botStatus.openTrade.direction === "BUY" ? "bg-primary/20 text-primary" : "bg-accent-red/20 text-accent-red"}`}>
-                    {botStatus.openTrade.direction}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge className={`border-0 ${botData.openTrade.direction === "BUY" ? "bg-primary/20 text-primary" : "bg-accent-red/20 text-accent-red"}`}>
+                      {botData.openTrade.direction}
+                    </Badge>
+                    <Badge className="border-0 bg-text-secondary/20 text-text-secondary text-[10px]">LIVE</Badge>
+                  </div>
                 </div>
-                <div className="grid grid-cols-3 gap-3 text-sm">
+                <div className="grid grid-cols-3 gap-3 text-sm mb-3">
                   <div>
                     <div className="text-xs text-text-secondary">Entry</div>
-                    <div className="font-mono font-semibold">{botStatus.openTrade.entryPrice?.toFixed(2) ?? "—"}</div>
+                    <div className="font-mono font-semibold">{botData.openTrade.entryPrice?.toFixed(2) ?? "—"}</div>
                   </div>
                   <div>
                     <div className="text-xs text-text-secondary">Current</div>
-                    <div className="font-mono font-semibold">{price > 0 ? price.toFixed(2) : "—"}</div>
+                    <div className={`font-mono font-semibold ${priceDir === "up" ? "text-primary" : priceDir === "down" ? "text-accent-red" : "text-foreground"}`}>
+                      {price > 0 ? price.toFixed(2) : "—"}
+                    </div>
                   </div>
                   <div>
                     <div className="text-xs text-text-secondary">P&L</div>
-                    <div className={`font-mono font-bold ${(botStatus.openTrade.pnl ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
-                      {(botStatus.openTrade.pnl ?? 0) >= 0 ? "+" : ""}{(botStatus.openTrade.pnl ?? 0).toFixed(2)}
+                    <div className={`font-mono font-bold ${(botData.openTrade.pnl ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
+                      {(botData.openTrade.pnl ?? 0) >= 0 ? "+" : ""}{(botData.openTrade.pnl ?? 0).toFixed(2)}
                     </div>
                   </div>
                 </div>
-                {botStatus.lastSignalScore != null && (
-                  <div className="mt-3 pt-3 border-t border-border flex items-center justify-between">
-                    <span className="text-xs text-text-secondary">AI Score</span>
-                    <div className="flex items-center gap-1">
-                      <div className="h-1.5 w-24 bg-border rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all"
-                          style={{ width: `${Math.min(100, (botStatus.lastSignalScore / 100) * 100)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-mono font-bold text-primary">
-                        {botStatus.lastSignalScore?.toFixed(0)}
-                      </span>
-                    </div>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Stop Loss</span>
+                    <span className="font-mono text-accent-red">{botData.openTrade.stopLoss?.toFixed(2) ?? "—"}</span>
                   </div>
-                )}
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">TP2</span>
+                    <span className="font-mono text-primary">{botData.openTrade.takeProfit2?.toFixed(2) ?? "—"}</span>
+                  </div>
+                  {botData.openTrade.breakEvenMoved && (
+                    <div className="col-span-2">
+                      <Badge className="border-0 bg-primary/10 text-primary text-[10px]">Break even moved</Badge>
+                    </div>
+                  )}
+                  {botData.openTrade.partialClosed && (
+                    <div className="col-span-2">
+                      <Badge className="border-0 bg-yellow-500/10 text-yellow-400 text-[10px]">TP1 partial closed</Badge>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            )}
+
+            {/* Session info */}
+            {sse.session && (
+              <Card className="bg-card border-border p-4">
+                <div className="text-xs text-text-secondary mb-2 uppercase tracking-wide">Trading Sessions</div>
+                <div className="space-y-2">
+                  {sse.session.all.map((s) => (
+                    <div key={s.name} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-1.5 h-1.5 rounded-full ${s.isActive ? "bg-primary animate-pulse" : "bg-border"}`} />
+                        <span className={`text-xs ${s.isActive ? "text-foreground font-medium" : "text-text-secondary"}`}>
+                          {s.name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          s.quality === "PREMIUM" ? "bg-primary/20 text-primary" :
+                          s.quality === "HIGH" ? "bg-yellow-500/20 text-yellow-400" :
+                          "bg-border text-text-secondary"
+                        }`}>
+                          {s.quality}
+                        </span>
+                        {s.isActive && <span className="text-[10px] text-primary font-medium">ACTIVE</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {sse.session.next && !sse.session.current && (
+                    <div className="text-xs text-text-secondary mt-2">
+                      {sse.session.next.name} opens in {sessionCountdown || `${sse.session.next.minutesUntil}m`}
+                    </div>
+                  )}
+                </div>
               </Card>
             )}
           </div>
@@ -365,33 +488,227 @@ export default function Dashboard() {
                   </ResponsiveContainer>
                 </div>
               ) : (
-                <div className="h-[280px] flex items-center justify-center text-text-secondary text-sm">
-                  No chart data available. Live data loads from Deriv.
+                <div className="h-[280px] flex flex-col items-center justify-center text-text-secondary text-sm gap-2">
+                  <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                  <span>Connecting to live Deriv data...</span>
                 </div>
               )}
             </Card>
 
-            {/* Current stats bar */}
+            {/* Live price + AI score row */}
             <div className="grid grid-cols-3 gap-3">
               <Card className="bg-card border-border p-3 text-center">
                 <div className="text-xs text-text-secondary mb-1">Live Price</div>
-                <div className={`font-bold font-mono ${priceDir === "up" ? "text-primary" : priceDir === "down" ? "text-accent-red" : "text-foreground"}`}>
+                <div className={`font-bold font-mono text-sm ${priceDir === "up" ? "text-primary" : priceDir === "down" ? "text-accent-red" : "text-foreground"}`}>
                   {price > 0 ? price.toFixed(2) : "—"}
                 </div>
               </Card>
               <Card className="bg-card border-border p-3 text-center">
                 <div className="text-xs text-text-secondary mb-1">Drawdown</div>
-                <div className="font-bold text-accent-red">
-                  {botStatus?.currentDrawdown != null ? `-${(botStatus.currentDrawdown * 100).toFixed(1)}%` : "—"}
+                <div className="font-bold text-accent-red text-sm">
+                  {(botData?.currentDrawdown ?? 0) > 0 ? `-${((botData?.currentDrawdown ?? 0) * 100).toFixed(1)}%` : "0%"}
                 </div>
               </Card>
               <Card className="bg-card border-border p-3 text-center">
                 <div className="text-xs text-text-secondary mb-1">AI Score</div>
-                <div className="font-bold text-primary">
-                  {botStatus?.currentScore != null ? botStatus.currentScore.toFixed(0) : "—"}
+                <div className={`font-bold text-sm ${
+                  (sse.scores?.total ?? 0) >= 38 ? "text-primary" :
+                  (sse.scores?.total ?? 0) >= 25 ? "text-yellow-400" : "text-text-secondary"
+                }`}>
+                  {sse.scores?.loading ? "…" : sse.scores?.total != null ? `${sse.scores.total.toFixed(1)}/50` : "—"}
                 </div>
               </Card>
             </div>
+
+            {/* AI Score breakdown panel */}
+            {sse.scores && !sse.scores.loading && (
+              <Card className="bg-card border-border p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Brain className="w-4 h-4 text-primary" />
+                    <span className="text-sm font-medium">AI Signal Analysis</span>
+                  </div>
+                  {sse.scores.direction && sse.scores.direction !== "NONE" && (
+                    <Badge className={`border-0 font-bold ${sse.scores.direction === "BUY" ? "bg-primary/20 text-primary" : "bg-accent-red/20 text-accent-red"}`}>
+                      {sse.scores.direction}
+                    </Badge>
+                  )}
+                  {sse.scores.direction === "NONE" && (
+                    <Badge className="border-0 bg-text-secondary/20 text-text-secondary">NO SIGNAL</Badge>
+                  )}
+                </div>
+
+                {/* Score bars */}
+                <div className="space-y-2 mb-4">
+                  <ScoreBar label="Trend" value={sse.scores.trend ?? 0} max={12} />
+                  <ScoreBar label="Volatility" value={sse.scores.volatility ?? 0} max={10} />
+                  <ScoreBar label="Timing" value={sse.scores.timing ?? 0} max={10} />
+                  <ScoreBar label="Pullback" value={sse.scores.pullback ?? 0} max={10} />
+                  <ScoreBar label="Risk" value={sse.scores.risk ?? 0} max={10} />
+                </div>
+
+                {/* Total score bar */}
+                <div className="mb-4">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-text-secondary">Total Score</span>
+                    <span className={`font-bold font-mono ${(sse.scores.total ?? 0) >= 38 ? "text-primary" : "text-text-secondary"}`}>
+                      {(sse.scores.total ?? 0).toFixed(1)} / 50
+                    </span>
+                  </div>
+                  <div className="h-2 bg-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(100, ((sse.scores.total ?? 0) / 50) * 100)}%`,
+                        backgroundColor: (sse.scores.total ?? 0) >= 38 ? "#00D4A4" : (sse.scores.total ?? 0) >= 25 ? "#FFB347" : "#FF4060"
+                      }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-text-secondary mt-1">
+                    <span>0</span>
+                    <span className="text-primary">38 threshold</span>
+                    <span>50</span>
+                  </div>
+                </div>
+
+                {/* Indicator grid */}
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">RSI(14)</span>
+                    <span className={`font-mono font-medium ${
+                      (sse.scores.rsi ?? 50) < 30 ? "text-primary" :
+                      (sse.scores.rsi ?? 50) > 70 ? "text-accent-red" : "text-foreground"
+                    }`}>{sse.scores.rsi?.toFixed(1) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">ADX</span>
+                    <span className={`font-mono font-medium ${(sse.scores.adx ?? 0) >= 25 ? "text-primary" : "text-text-secondary"}`}>
+                      {sse.scores.adx?.toFixed(1) ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Stoch %K</span>
+                    <span className={`font-mono font-medium ${
+                      (sse.scores.stochK ?? 50) < 20 ? "text-primary" :
+                      (sse.scores.stochK ?? 50) > 80 ? "text-accent-red" : "text-foreground"
+                    }`}>{sse.scores.stochK?.toFixed(1) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">MACD Hist</span>
+                    <span className={`font-mono font-medium ${(sse.scores.macdHistogram ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
+                      {sse.scores.macdHistogram?.toFixed(4) ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">EMA9</span>
+                    <span className="font-mono">{sse.scores.ema9?.toFixed(1) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">EMA21</span>
+                    <span className="font-mono">{sse.scores.ema21?.toFixed(1) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Trend</span>
+                    <span className={`font-medium ${
+                      sse.scores.trendDirection === "BULL" ? "text-primary" :
+                      sse.scores.trendDirection === "BEAR" ? "text-accent-red" : "text-text-secondary"
+                    }`}>{sse.scores.trendDirection ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Band</span>
+                    <span className={`font-medium ${
+                      sse.scores.bandTouched === "LOWER" ? "text-primary" :
+                      sse.scores.bandTouched === "UPPER" ? "text-accent-red" : "text-text-secondary"
+                    }`}>{sse.scores.bandTouched ?? "NONE"}</span>
+                  </div>
+                </div>
+
+                {/* Context flags */}
+                <div className="flex gap-2 mt-3 flex-wrap">
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sse.scores.pullbackZone ? "bg-primary/20 text-primary" : "bg-border text-text-secondary"}`}>
+                    Pullback Zone
+                  </span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sse.scores.consolidation ? "bg-yellow-500/20 text-yellow-400" : "bg-border text-text-secondary"}`}>
+                    Consolidation
+                  </span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sse.scores.spikeDetected ? "bg-accent-red/20 text-accent-red" : "bg-border text-text-secondary"}`}>
+                    Spike
+                  </span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full bg-border text-text-secondary`}>
+                    {sse.scores.rangeContext ?? "middle"}
+                  </span>
+                </div>
+
+                {sse.scores.rejectionReason && (
+                  <div className="mt-2 text-xs text-text-secondary">
+                    ↳ {sse.scores.rejectionReason}
+                  </div>
+                )}
+              </Card>
+            )}
+
+            {sse.scores?.loading && (
+              <Card className="bg-card border-border p-4 flex items-center gap-3">
+                <Loader2 className="w-4 h-4 animate-spin text-primary shrink-0" />
+                <div>
+                  <div className="text-sm font-medium">Gathering market data</div>
+                  <div className="text-xs text-text-secondary">
+                    {sse.scores.candlesLoaded ?? 0} / 50 candles needed
+                  </div>
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* ─── TRADES TAB ─── */}
+        {activeTab === "trades" && (
+          <div className="space-y-4">
+            {/* Stats summary */}
+            {stats && (
+              <div className="grid grid-cols-3 gap-3">
+                <Card className="bg-card border-border p-3 text-center">
+                  <div className="text-xs text-text-secondary mb-1">Win Rate</div>
+                  <div className="font-bold text-primary">
+                    {(stats as any).totalTrades >= 10
+                      ? `${(stats as any).winRate?.toFixed(1)}%`
+                      : "—"}
+                  </div>
+                </Card>
+                <Card className="bg-card border-border p-3 text-center">
+                  <div className="text-xs text-text-secondary mb-1">Total P&L</div>
+                  <div className={`font-bold ${(stats as any).totalPnl >= 0 ? "text-primary" : "text-accent-red"}`}>
+                    {(stats as any).totalPnl >= 0 ? "+" : ""}{(stats as any).totalPnl?.toFixed(2)}
+                  </div>
+                </Card>
+                <Card className="bg-card border-border p-3 text-center">
+                  <div className="text-xs text-text-secondary mb-1">Trades</div>
+                  <div className="font-bold">{(stats as any).totalTrades}</div>
+                </Card>
+              </div>
+            )}
+
+            {/* Extended stats */}
+            {stats && (stats as any).totalTrades > 0 && (
+              <div className="grid grid-cols-2 gap-3">
+                <Card className="bg-card border-border p-3">
+                  <div className="text-xs text-text-secondary mb-1">Profit Factor</div>
+                  <div className="font-bold">{(stats as any).profitFactor?.toFixed(2) ?? "—"}</div>
+                </Card>
+                <Card className="bg-card border-border p-3">
+                  <div className="text-xs text-text-secondary mb-1">Avg Duration</div>
+                  <div className="font-bold">{(stats as any).avgDuration?.toFixed(0) ?? "—"}m</div>
+                </Card>
+                <Card className="bg-card border-border p-3">
+                  <div className="text-xs text-text-secondary mb-1">Best Win</div>
+                  <div className="font-bold text-primary">+{(stats as any).largestWin?.toFixed(2) ?? "—"}</div>
+                </Card>
+                <Card className="bg-card border-border p-3">
+                  <div className="text-xs text-text-secondary mb-1">Worst Loss</div>
+                  <div className="font-bold text-accent-red">{(stats as any).largestLoss?.toFixed(2) ?? "—"}</div>
+                </Card>
+              </div>
+            )}
 
             {/* Equity curve */}
             {equityData.length > 1 && (
@@ -410,31 +727,6 @@ export default function Dashboard() {
                   </ResponsiveContainer>
                 </div>
               </Card>
-            )}
-          </div>
-        )}
-
-        {/* ─── TRADES TAB ─── */}
-        {activeTab === "trades" && (
-          <div className="space-y-4">
-            {/* Stats summary */}
-            {stats && (
-              <div className="grid grid-cols-3 gap-3">
-                <Card className="bg-card border-border p-3 text-center">
-                  <div className="text-xs text-text-secondary mb-1">Win Rate</div>
-                  <div className="font-bold text-primary">{(stats.winRate * 100).toFixed(1)}%</div>
-                </Card>
-                <Card className="bg-card border-border p-3 text-center">
-                  <div className="text-xs text-text-secondary mb-1">Total P&L</div>
-                  <div className={`font-bold ${stats.totalPnl >= 0 ? "text-primary" : "text-accent-red"}`}>
-                    {stats.totalPnl >= 0 ? "+" : ""}{stats.totalPnl.toFixed(2)}
-                  </div>
-                </Card>
-                <Card className="bg-card border-border p-3 text-center">
-                  <div className="text-xs text-text-secondary mb-1">Trades</div>
-                  <div className="font-bold">{stats.totalTrades}</div>
-                </Card>
-              </div>
             )}
 
             {/* Filter tabs */}
@@ -471,17 +763,11 @@ export default function Dashboard() {
                             <TrendingDown className="w-4 h-4 text-accent-red" />
                           )}
                           <div>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="text-sm font-medium">{trade.direction}</span>
-                              {isOpen && (
-                                <Badge className="h-4 text-[10px] bg-primary/20 text-primary border-0 px-1">LIVE</Badge>
-                              )}
-                              {trade.isCopyTrade && (
-                                <Badge className="h-4 text-[10px] bg-yellow-500/20 text-yellow-400 border-0 px-1">COPY</Badge>
-                              )}
-                              {trade.isPaper && (
-                                <Badge className="h-4 text-[10px] bg-text-secondary/20 text-text-secondary border-0 px-1">PAPER</Badge>
-                              )}
+                              {isOpen && <Badge className="h-4 text-[10px] bg-primary/20 text-primary border-0 px-1">LIVE</Badge>}
+                              {trade.isCopyTrade === 1 && <Badge className="h-4 text-[10px] bg-yellow-500/20 text-yellow-400 border-0 px-1">COPY</Badge>}
+                              {trade.isPaper === 1 && <Badge className="h-4 text-[10px] bg-text-secondary/20 text-text-secondary border-0 px-1">PAPER</Badge>}
                             </div>
                             <div className="text-xs text-text-secondary font-mono">
                               {trade.entryPrice?.toFixed(2) ?? "—"} → {trade.exitPrice?.toFixed(2) ?? "open"}
@@ -492,21 +778,24 @@ export default function Dashboard() {
                           <div className={`font-bold tabular-nums ${isWin ? "text-primary" : isOpen ? "text-text-secondary" : "text-accent-red"}`}>
                             {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}
                           </div>
-                          <div className="text-xs text-text-secondary">
-                            {trade.scoreTotal != null ? `Score: ${trade.scoreTotal.toFixed(0)}` : ""}
-                          </div>
+                          {trade.scoreTotal != null && (
+                            <div className="text-xs text-text-secondary">Score: {trade.scoreTotal.toFixed(0)}</div>
+                          )}
                         </div>
                       </div>
-                      <div className="mt-2 text-xs text-text-secondary">
-                        {new Date(trade.openedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                        {trade.sessionName ? ` · ${trade.sessionName}` : ""}
+                      <div className="mt-2 flex items-center justify-between text-xs text-text-secondary">
+                        <span>
+                          {new Date((trade.openedAt || 0) * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          {trade.sessionName ? ` · ${trade.sessionName}` : ""}
+                        </span>
+                        {trade.durationMinutes != null && <span>{trade.durationMinutes}m</span>}
                       </div>
                     </Card>
                   );
                 })}
                 {(!tradesData?.trades || tradesData.trades.length === 0) && (
                   <div className="text-center p-8 text-text-secondary border border-dashed border-border rounded-xl">
-                    No trades found.
+                    No trades yet. Start the bot to begin trading.
                   </div>
                 )}
               </div>
@@ -526,9 +815,11 @@ export default function Dashboard() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-text-secondary">Profile</span>
-                  <span className="font-medium capitalize">
-                    {dashboardData?.user?.tradingProfile ?? "Not set"}
-                  </span>
+                  <span className="font-medium capitalize">{dashboardData?.user?.tradingProfile ?? "Not set"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-secondary">Mode</span>
+                  <span className="font-medium capitalize">{dashboardData?.user?.tradingMode ?? "paper"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-text-secondary">Deriv Token</span>
@@ -541,6 +832,22 @@ export default function Dashboard() {
                   <span className={dashboardData?.user?.copyTradingEnabled ? "text-primary" : "text-text-secondary"}>
                     {dashboardData?.user?.copyTradingEnabled ? "Enabled" : "Disabled"}
                   </span>
+                </div>
+              </div>
+            </Card>
+
+            <Card className="p-4 bg-card border border-border rounded-xl">
+              <h3 className="font-bold mb-3">Connection</h3>
+              <div className="flex items-center gap-3">
+                <div className={`w-2 h-2 rounded-full ${connDotClass}`} />
+                <div className="text-sm">
+                  {sse.connected ? (
+                    <span className="text-primary">
+                      Live — V75 @ {price > 0 ? price.toFixed(2) : "loading..."}
+                    </span>
+                  ) : (
+                    <span className="text-accent-red">Disconnected — reconnecting...</span>
+                  )}
                 </div>
               </div>
             </Card>

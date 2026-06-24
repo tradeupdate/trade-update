@@ -1,0 +1,961 @@
+The platform scaffold is built but nothing is truly 
+functional. Wire up every system end to end so the 
+platform actually works as a live trading bot.
+Work through every section below completely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — DERIV CONNECTION (MAKE IT LIVE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Deriv WebSocket service exists but is not 
+actually streaming live data to the dashboard.
+
+Fix completely:
+
+1. On server start, immediately open a WebSocket 
+   connection to:
+   wss://ws.binaryws.com/websockets/v3?app_id=1089
+   WITHOUT any authorization token first.
+
+2. Immediately after connection opens, send:
+   { "ticks": "R_75", "subscribe": 1 }
+   This is a PUBLIC endpoint — no token needed.
+   
+3. Immediately also send for candle history:
+   { "ticks_history": "R_75", "style": "candles",
+     "granularity": 60, "count": 200,
+     "end": "latest", "subscribe": 1 }
+
+4. Every tick received: store as latestTick globally.
+   Log the first 5 ticks to console to confirm 
+   price is in 38,000-42,000 range.
+   If price is outside 20,000-80,000: wrong symbol,
+   disconnect and fix the symbol string.
+
+5. Every candle received: add to candle arrays.
+   Build 5m candles by grouping 5×1m candles.
+   Build 15m candles by grouping 15×1m candles.
+
+6. Send ping every 25 seconds:
+   { "ping": 1 }
+
+7. Wire the SSE endpoint to push tick data 
+   to all connected browser clients every second:
+   data: {"type":"tick","payload":{"price":39245.50,
+   "direction":"up","time":1234567890}}
+
+8. The header price display must update live 
+   from this SSE stream — no manual refresh needed.
+
+9. For authorized users (with token):
+   After connection, send:
+   { "authorize": "USER_TOKEN" }
+   Wait for auth response then get balance:
+   { "balance": 1, "subscribe": 1 }
+   Update user's account_balance in database.
+
+10. Test by opening the dashboard and confirming:
+    - Price in header updates every second
+    - Price is in correct 38,000-42,000 range
+    - Connection dot is green
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — SCORING ENGINE (MAKE IT CALCULATE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The scoring engine exists as a class but is not 
+actually running calculations on real candle data.
+
+Fix completely:
+
+1. As soon as 50 candles are available in the 
+   candle arrays, start running the scorer.
+   Before 50 candles: broadcast 
+   { type: "scores", payload: { loading: true,
+     message: "Gathering market data...",
+     candlesLoaded: X } }
+
+2. Run the scorer on every new 5m candle close.
+   Also run every 60 seconds as backup.
+
+3. Actually implement every calculation:
+
+   EMA calculation:
+   function ema(candles, period):
+     k = 2 / (period + 1)
+     ema = candles[0].close
+     for each candle: ema = close * k + ema * (1-k)
+     return ema
+
+   ADX calculation (full +DI, -DI, ADX):
+   Calculate TR (true range) for each candle
+   Calculate +DM and -DM
+   Smooth over 14 periods
+   +DI = 100 * smoothed+DM / smoothedTR
+   -DI = 100 * smoothed-DM / smoothedTR
+   DX = 100 * |+DI - -DI| / (+DI + -DI)
+   ADX = 14-period EMA of DX
+
+   Bollinger Bands:
+   middle = 20-period SMA of close
+   std = standard deviation of last 20 closes
+   upper = middle + (2 * std)
+   lower = middle - (2 * std)
+   width = (upper - lower) / middle * 100
+
+   RSI(14):
+   Calculate average gain and average loss 
+   over 14 periods
+   RS = avgGain / avgLoss
+   RSI = 100 - (100 / (1 + RS))
+
+   Stochastic(5,3,3):
+   highest_high = max of last 5 highs
+   lowest_low = min of last 5 lows
+   %K = (close - lowest_low) / 
+        (highest_high - lowest_low) * 100
+   %D = 3-period SMA of %K
+
+   MACD(12,26,9):
+   macd_line = EMA12 - EMA26
+   signal_line = 9-period EMA of macd_line
+   histogram = macd_line - signal_line
+
+   ATR(14):
+   TR = max(high-low, |high-prevClose|, 
+            |low-prevClose|)
+   ATR = 14-period EMA of TR
+
+4. After calculating all indicators, compute 
+   all 5 component scores using the exact 
+   logic from the specification.
+
+5. Apply adaptive weights if user has 50+ trades.
+
+6. Apply range context filter (30-day high/low).
+
+7. Determine signal direction (BUY/SELL/NONE).
+
+8. Check all signal direction conditions.
+
+9. Log every evaluation to signal_log table.
+
+10. Broadcast scores via SSE every evaluation:
+    { type: "scores", payload: {
+      total: 38.5,
+      trend: 8.2,
+      volatility: 7.5,
+      timing: 6.8,
+      pullback: 7.0,
+      risk: 9.0,
+      signal: "BUY",
+      direction: "BUY",
+      loading: false,
+      ema9: 39150.20,
+      ema21: 39080.50,
+      adx: 28.4,
+      rsi: 31.2,
+      bbUpper: 39420.00,
+      bbLower: 38890.00,
+      stochK: 19.5,
+      macdHistogram: 0.0045,
+      rangeContext: "middle",
+      consolidation: false,
+      spikeDetected: false,
+      trendDirection: "BULL",
+      bandTouched: "LOWER",
+      pullbackZone: true,
+      rejectionReason: null
+    }}
+
+11. The score panel on the dashboard must display 
+    these real calculated values — not placeholder 
+    zeros or static numbers.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — BOT ENGINE (MAKE IT TRADE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The bot engine class exists but toggling the bot 
+on does not actually start any trading loop.
+
+Fix completely:
+
+1. When user toggles bot ON via API:
+   Instantiate BotEngine for that user if not exists
+   Set isRunning = true
+   Start the evaluation loop immediately
+   Broadcast { type: "bot", payload: { 
+     status: "active", reason: null }}
+
+2. Evaluation loop trigger:
+   On every new 5m candle close (primary trigger)
+   Also run every 60 seconds as backup
+
+3. Implement ALL pre-trade checks in exact order:
+   
+   CHECK 1 — Master stop:
+   Read system_settings where key='master_stop'
+   If value='true': 
+     pauseReason = "System maintenance"
+     broadcast pause, return
+
+   CHECK 2 — Kill switch:
+   If killSwitchActive:
+     pauseReason = "Kill switch active"
+     broadcast, return
+
+   CHECK 3 — Strategy circuit breaker:
+   Read strategy for this user
+   If circuit_breaker_active = 1:
+     pauseReason = "Strategy paused by admin"
+     broadcast, return
+
+   CHECK 4 — Session filter:
+   Get current UTC time
+   Check if within any enabled session window
+   If not:
+     Get next session name and minutes until start
+     pauseReason = "Outside session — [name] in Xm"
+     broadcast, return
+
+   CHECK 5 — First candle rule:
+   If within first 15 minutes of session opening:
+     pauseReason = "Waiting for first session candle"
+     broadcast, return
+
+   CHECK 6 — Spike filter:
+   Read last 1m candle range
+   Compare to ATR(14) on 1m
+   If range > 3× ATR:
+     Set spikeDetected = true
+     spikeWaitCandles = 2
+     pauseReason = "Spike detected — waiting 2 candles"
+     If open trade: move stop to break even
+     broadcast, return
+   If spikeWaitCandles > 0:
+     spikeWaitCandles--
+     pauseReason = "Post-spike cooldown"
+     return
+
+   CHECK 7 — Consolidation:
+   Check last 8 candles on 5m
+   If range < 1.5× ATR:
+     consolidationActive = true
+     Check for breakout
+     If no breakout: return (wait)
+     If breakout: continue but skip pullback rule
+
+   CHECK 8 — Daily loss cap:
+   Read user's daily_start_balance
+   Calculate current daily loss %
+   If loss >= profile max daily loss:
+     Set dailyLossHit = true
+     pauseReason = "Daily loss limit reached"
+     isRunning = false
+     broadcast, return
+   If loss >= 75% of max:
+     Broadcast warning notification
+
+   CHECK 9 — Consecutive losses:
+   If consecutiveLosses >= profile limit:
+     pauseReason = "X consecutive losses — 
+     tap Resume to continue"
+     isRunning = false
+     broadcast, return
+
+   CHECK 10 — Cooldown:
+   If lastTradeTime exists:
+     minutesSince = now - lastTradeTime (minutes)
+     If minutesSince < 10:
+       remaining = 10 - minutesSince
+       pauseReason = "Cooldown — Xm Xs remaining"
+       broadcast, return
+
+   CHECK 11 — Open trade:
+   If openTrade exists:
+     pauseReason = "Trade in progress"
+     return
+
+   CHECK 12 — Trade limits:
+   If todayTrades >= profile max trades day:
+     pauseReason = "Daily trade limit reached"
+     return
+   If thisHourTrades >= profile max trades hour:
+     pauseReason = "Hourly limit reached"
+     return
+
+4. Run scoring engine with current candles
+   Apply all modifiers (adaptive, range, session)
+
+5. Log to signal_log regardless of result
+
+6. If score >= threshold AND signal != NONE:
+   Check candle pattern on 1m
+   If pattern confirmed OR consolidation breakout:
+     Execute trade
+   Else:
+     Log "Awaiting candle pattern confirmation"
+     broadcast { rejectionReason: 
+       "Awaiting candle pattern confirmation" }
+
+7. Execute trade:
+   Calculate stake:
+   base = userBalance * riskPercent / 100
+   if winStreakCaution: base *= 0.80
+   base *= sessionMultiplier
+   if recoveryMode: base *= 0.50
+   base = Math.max(1, Math.min(50, base))
+
+   If paper mode:
+     Create trade record in database
+     openTrade = { id, direction, entryPrice: 
+       latestTick.price, stake, stopLoss, 
+       takeProfit1, takeProfit2,
+       openedAt: now }
+   
+   If options mode:
+     Call placeOrder on derivService
+     Save contract_id from response
+     Create trade record with contract_id
+
+   Increment todayTrades, thisHourTrades
+   Set lastTradeTime = now
+   consecutiveWins tracking
+   
+   Broadcast { type: "trade", payload: {
+     action: "opened", trade: openTrade }}
+
+   Start trade monitor loop
+
+8. TRADE MONITOR (every 5 seconds per open trade):
+   Get currentPrice from latestTick
+   
+   If BUY:
+     pip distance up = currentPrice - entryPrice
+     pip distance down = entryPrice - currentPrice
+   
+   If SELL:
+     pip distance up = entryPrice - currentPrice
+     pip distance down = currentPrice - entryPrice
+
+   Check stop loss:
+   If direction BUY and currentPrice <= stopLoss:
+     closeTrade("loss", currentPrice)
+     return
+   If direction SELL and currentPrice >= stopLoss:
+     closeTrade("loss", currentPrice)
+     return
+
+   Check break even (profit = 1× stop distance):
+   If profitPips >= stopDistance AND !breakEvenMoved:
+     If BUY: stopLoss = entryPrice + 2 (buffer pips)
+     If SELL: stopLoss = entryPrice - 2
+     breakEvenMoved = true
+     Update trade in database
+     Send break even notification
+     Broadcast update
+
+   Check TP1 (profit = 1.5× stop distance):
+   If profitPips >= stopDistance * 1.5 AND !partialClosed:
+     Close 50% of position
+     partialClosed = true
+     Record partial P&L
+     Update database
+     Start trailing from TP1 level
+     Send partial close notification
+     Broadcast update
+
+   Check TP2 (profit = 3× stop distance):
+   If profitPips >= stopDistance * 3 AND !partialClosed2:
+     Check momentum extension conditions
+     If extension conditions met:
+       momentumExtension = true
+       Switch to ATR trailing stop
+     Else:
+       closeTrade("win", currentPrice)
+     return
+
+   Momentum extension trailing:
+   If momentumExtension:
+     Update trailing stop: 
+     If BUY: newStop = currentPrice - (1.5 * atr1m)
+     If SELL: newStop = currentPrice + (1.5 * atr1m)
+     If newStop better than current stop: update
+     Check extension conditions still valid
+     If any condition breaks: closeTrade("win", price)
+
+   ATR trailing (after partial close):
+   If partialClosed AND !momentumExtension:
+     If BUY: trailStop = max(stopLoss, 
+       tp1Level - (1 * atr1m))
+     Update stopLoss if trail is better
+
+   Time stop:
+   minutesOpen = (now - openedAt) / 60000
+   If minutesOpen >= 45:
+     closeTrade("timeout", currentPrice)
+
+9. CLOSE TRADE function:
+   closeTrade(result, closePrice):
+   
+   Calculate final P&L:
+   If paper:
+     pips = |closePrice - entryPrice|
+     if result="win": pnl = stake * 0.85
+     if result="loss": pnl = -stake
+     if result="timeout": calculate from price diff
+   If options:
+     Call sell on contract, use Deriv payout
+   
+   Update trade in database:
+   exit_price = closePrice
+   pnl = calculated
+   pips = calculated
+   status = "closed"
+   closed_at = now
+   
+   Update user stats:
+   if win: consecutiveLosses = 0, consecutiveWins++
+   if loss: consecutiveLosses++, consecutiveWins = 0
+   
+   Update session performance record
+   Update strategy performance record
+   Update adaptive weights tracking
+   
+   Check recovery mode:
+   currentDrawdown = (peakBalance - balance) / peakBalance
+   if currentDrawdown >= 0.15 AND !recoveryMode:
+     Activate recovery mode
+     Send recovery notification
+   
+   Check if peak balance updated:
+   if balance > peakBalance: peakBalance = balance
+   Update user in database
+   
+   Set openTrade = null
+   Send trade closed notification
+   Broadcast { type: "trade", payload: {
+     action: "closed", result, pnl, trade }}
+
+10. RECOVERY MODE exit check (after each trade):
+    If recoveryMode AND balance >= peakBalance * 0.95:
+      If recoveryTradeCount >= 3:
+        Start graceful exit:
+        Phase 1 (24hrs): stake at 75% of normal
+        Phase 2 (48hrs): return to full stake
+        Set recoveryMode = false
+        Send recovery exit notification
+      Else:
+        recoveryTradeCount++
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — SSE STREAMING (WIRE TO FRONTEND)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SSE is built but frontend is not consuming it.
+
+Fix completely:
+
+1. Create a useSSE hook in React:
+   (client/src/hooks/useSSE.ts)
+   
+   Connect to /api/user/stream on mount
+   Reconnect automatically if connection drops
+   Parse incoming events by type
+   Update global state for each event type
+
+2. Event types the hook must handle:
+   
+   "tick" → update price in header store
+   "scores" → update score panel store  
+   "bot" → update bot status store
+   "session" → update session cards store
+   "stats" → update stats row store
+   "trade" → update open trade panel store
+   "alert" → show notification toast
+   "maintenance" → show maintenance banner
+
+3. Server must send these events every second:
+   
+   Every 1 second:
+   data: {"type":"tick","payload":{
+     "price": latestTick.price,
+     "direction": "up" or "down",
+     "time": timestamp
+   }}
+
+   Every 5 seconds:
+   data: {"type":"scores","payload":{
+     all score fields from Section 2 step 10
+   }}
+
+   data: {"type":"bot","payload":{
+     "status": "active"|"paused"|"stopped",
+     "pauseReason": string|null,
+     "isRunning": boolean,
+     "killSwitchActive": boolean,
+     "openTrade": trade object or null,
+     "consecutiveLosses": number,
+     "todayTrades": number,
+     "thisHourTrades": number,
+     "recoveryMode": boolean,
+     "winStreakCaution": boolean,
+     "spikeDetected": boolean,
+     "consolidation": boolean
+   }}
+
+   data: {"type":"session","payload":{
+     "current": {name, quality} or null,
+     "next": {name, minutesUntil},
+     "all": [array of all 4 sessions with status]
+   }}
+
+   data: {"type":"stats","payload":{
+     "balance": number,
+     "equity": number,
+     "dailyPnl": number,
+     "dailyPnlPercent": number,
+     "winRate": number or null,
+     "peakBalance": number,
+     "currentDrawdown": number
+   }}
+
+4. In React, connect the hook outputs to components:
+
+   Header price: reads from tick store
+   Score panel: reads from scores store
+   Bot control card: reads from bot store
+   Session cards: reads from session store
+   Stat cards: reads from stats store
+   Open trade panel: reads from bot.openTrade
+
+5. All these must update in real time without 
+   any page refresh or manual API call.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — CHART (WIRE TO LIVE DATA)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The chart exists but shows placeholder data.
+
+Fix completely:
+
+1. On chart tab load, fetch candle history:
+   GET /api/user/chart/candles?timeframe=5m
+   Returns last 200 candles as OHLCV array
+
+2. Initialize lightweight-charts with this data:
+   Each candle: { time, open, high, low, close }
+   Green candle: #00D4A4
+   Red candle: #FF4060
+
+3. Subscribe to SSE tick events:
+   On each tick: update the last candle in real time
+   candleSeries.update({ time, open, high, 
+     low: min(low, price), 
+     high: max(high, price), 
+     close: price })
+
+4. When a new candle forms (time crosses minute):
+   Add new candle to chart
+   Keep rolling window of 200 candles
+
+5. Calculate and overlay indicators ON the chart:
+
+   Bollinger Bands overlay:
+   Calculate BB from candle close array
+   Add 3 line series: upper, middle, lower
+   Color: rgba(255,255,255,0.3)
+   Style: dashed for middle
+
+   EMA9 line series: color #00D4A4, dashed
+   EMA21 line series: color #FFB347, dashed
+   EMA50 line series: color #8B5CF6, dashed (15m only)
+
+6. When timeframe switches (1m/5m/15m):
+   Fetch new candles from API
+   Rebuild all overlays for new timeframe
+   Maintain same visual style
+
+7. Add signal markers when trades execute:
+   On BUY trade: green ▲ below the signal candle
+   On SELL trade: red ▼ above the signal candle
+   Add via chart.setMarkers()
+
+8. Add 30-day high/low horizontal lines:
+   Calculate from candle history
+   Add as price lines on chart
+   Dashed, with labels "30D High" / "30D Low"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — TRADE HISTORY (WIRE TO DATABASE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Trades tab shows placeholder data.
+
+Fix completely:
+
+1. On trades tab load:
+   GET /api/user/trades
+   Returns real trades from database for this user
+   Include all fields: direction, entry, exit,
+   pnl, pips, duration, score, session, mode
+
+2. Display each trade as a card:
+   BUY/SELL badge (teal/red)
+   PAPER badge if is_paper = 1
+   COPY badge if is_copy_trade = 1
+   P&L in large text (green positive, red negative)
+   Entry price → exit price with arrow
+   Duration in minutes
+   Score: X/50
+   Tap to expand:
+     All 5 score components
+     RSI, Stoch, MACD values at entry
+     Stop loss and TP levels
+     Break even: moved or not
+     Partial close: triggered or not
+     Session name and weight
+     Range context at time of entry
+     Recovery mode active at time
+
+3. Filter pills that actually work:
+   All: show all trades
+   Win: filter where pnl > 0
+   Loss: filter where pnl < 0
+   Paper: filter where is_paper = 1
+   Copy: filter where is_copy_trade = 1
+
+4. Stats sub-tab calculates from real trade data:
+   Win rate: wins / total (show — if < 10 trades)
+   Total P&L: sum of all pnl
+   Profit factor: sum wins / abs(sum losses)
+   Avg win: average pnl of winning trades
+   Avg loss: average pnl of losing trades
+   Largest win: max pnl
+   Largest loss: min pnl
+   Avg duration: average minutes
+   Best session: session with highest win rate
+
+   Equity curve: 
+   Plot running balance after each trade
+   Start from first trade
+   Empty state if no trades yet
+
+   Session performance table:
+   For each session: trades, wins, win rate, avg pnl
+   Calculated from trades where session_name = session
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — AUTH FLOWS (MAKE THEM WORK)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Login, logout, and signup exist but have issues.
+
+Fix completely:
+
+1. LOGIN:
+   POST /api/auth/login with { username, password }
+   On success: server sets httpOnly cookie
+   React clears all local state
+   Check response for mustChangePassword flag
+   If true: show force password change modal
+   Check response for hasProfile flag
+   If false: redirect to /setup
+   If all good: redirect to /dashboard
+   
+   On error 403 with status='pending':
+   Redirect to /pending page
+   
+   On error 403 with status='rejected':
+   Show "Your access request was not approved"
+
+2. LOGOUT:
+   Call POST /api/auth/logout
+   Server clears httpOnly cookie
+   React: clear all stores/state
+   navigate('/login', { replace: true })
+   After navigate, window.location.reload() to 
+   ensure all state is fully cleared
+
+3. SIGNUP:
+   POST /api/auth/signup with form data
+   On success: redirect to /pending
+   On error: show specific field errors
+   After successful signup:
+     Send confirmation email (or log if no SMTP)
+     Save to signups.csv
+     Create pending_signups record
+     Notify admin panel (badge count increases)
+
+4. PASSWORD FORCE CHANGE:
+   Show modal immediately after login if required
+   Cannot dismiss modal
+   Call POST /api/auth/change-password
+   On success: close modal, continue to dashboard
+   Update force_password_change = 0 in database
+
+5. SESSION EXPIRY:
+   If any API call returns 401:
+   Clear state
+   Show toast: "Session expired — please log in"
+   Redirect to /login after 2 seconds
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — ADMIN FEATURES (MAKE FUNCTIONAL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Admin panel UI exists but actions don't work.
+
+Fix completely:
+
+1. PENDING SIGNUPS:
+   GET /api/admin/signups returns pending list
+   Approve button: POST /api/admin/signups/approve/:id
+     Creates user record
+     Sets status=approved, is_active=1
+     Assigns safe profile
+     Sends approval email
+     Returns success
+     Admin panel removes from pending list
+   
+   Reject button: POST /api/admin/signups/reject/:id
+     Updates status=rejected
+     Sends rejection email
+     Removes from list
+
+   Export CSV: GET /api/admin/signups/export
+     Returns /server/data/signups.csv as download
+
+2. USER MANAGEMENT:
+   Create user: POST /api/admin/users/create
+     Validates fields
+     Hashes password
+     Creates user with is_active=1, status=approved
+     Returns { user, tempPassword }
+     Admin sees copyable credentials card
+
+   Toggle user active: PATCH /api/admin/users/:id
+     { isActive: true/false }
+     Stops bot if deactivating
+
+   Assign strategy: PATCH /api/admin/users/:id
+     { strategyId: string }
+     Updates user.strategy_id
+     Restarts bot engine with new strategy
+
+3. STRATEGY MANAGEMENT:
+   Create strategy: POST /api/admin/strategies/create
+     Save all form fields to strategies table
+     Return new strategy with id
+   
+   Assign to user: POST /api/admin/strategies/:id/assign/:userId
+     Update user.strategy_id
+     Log admin action
+   
+   Pause strategy: POST /api/admin/strategies/:id/pause
+     Set circuit_breaker_active = 1
+     Pause all bots using this strategy
+     Log event
+   
+   Reactivate: POST /api/admin/strategies/:id/reactivate
+     Validate 4 hours have passed since pause
+     Set circuit_breaker_active = 0
+     Log event
+
+4. COPY TRADING:
+   Preview: POST /api/admin/copy-trade/preview
+     Body: { direction, userIds, riskMultiplier }
+     For each user check all eligibility rules
+     Return { willReceive[], willBeSkipped[], 
+              forceAvailable[], summary }
+   
+   Execute: POST /api/admin/copy-trade/execute
+     Body: { direction, userIds, riskMultiplier,
+             forceOverrides[] }
+     For each receiving user:
+       Run trade execution on their bot engine
+       Bypass cooldown only
+       Respect all other rules
+       Tag trade as copy trade
+     Save to copy_trades table
+     Broadcast copy trade notification to users
+
+5. BACKTEST:
+   Run: POST /api/admin/backtest/run
+     Body: { strategyId, days: 30 }
+     Load historical candle data
+     Replay through scoring engine
+     Simulate trade executions
+     Calculate all metrics
+     Save to backtest_results table
+     Return complete results
+   
+   Results display:
+   Show side-by-side vs live performance
+   Highlight better/worse metrics
+   Render equity curve chart
+   
+   Export: GET /api/admin/backtest/:id/export
+     Generate PDF with charts and tables
+     Return as file download
+
+6. MASTER STOP:
+   POST /api/admin/settings/master-stop
+     { stopped: true/false }
+     Update system_settings master_stop
+     Immediately pause ALL running bots
+     Broadcast maintenance banner to all SSE clients
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — PAPER TRADING P&L SIMULATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Paper trading exists but P&L isn't simulated 
+against real price movement.
+
+Fix completely:
+
+1. When a paper trade opens, record:
+   entryPrice = latestTick.price (exact, not rounded)
+   direction = BUY or SELL
+   stopLoss = calculated from ATR
+   takeProfit1 = calculated
+   takeProfit2 = calculated
+   stake = calculated from profile
+
+2. Trade monitor uses real tick prices:
+   Every 5 seconds: currentPrice = latestTick.price
+   Calculate P&L in real time:
+   
+   If BUY:
+   unrealizedPnl = stake * ((currentPrice - entryPrice) 
+     / entryPrice) * 85
+   (85% simulates Deriv options payout rate)
+   
+   If SELL:
+   unrealizedPnl = stake * ((entryPrice - currentPrice) 
+     / entryPrice) * 85
+
+3. Show live unrealized P&L on open trade card:
+   Updates every second from SSE
+   Green if positive, red if negative
+
+4. On close:
+   finalPrice = latestTick.price at close moment
+   
+   If win (price past TP):
+     pnl = stake * 0.85 (full win)
+   If partial close triggered:
+     partial_pnl = (stake/2) * 0.85
+     remaining tracked separately
+   If stop hit:
+     pnl = -stake (full loss)
+   If time stop:
+     pnl = calculated from price vs entry
+   
+   Update account_balance = balance + pnl
+   Update peak_balance if balance > peak
+   Update daily_start_balance tracking
+
+5. Balance on Home tab must reflect 
+   paper trade results in real time.
+   After each closed trade balance updates.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — CLEAN10TEST ACCOUNT VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Verify the test account works end to end:
+
+1. Login with Clean10test / Test1234! works
+2. No force password change (or set it up)
+3. Account shows $5,000 balance
+4. Paper trading mode active
+5. V75 Sniper strategy assigned
+6. Safe profile active
+7. Bot can be toggled on
+8. Live R_75 price shows in header
+9. Scores calculate and show in chart tab
+10. Turning bot on starts evaluation loop
+11. When score reaches 38/50 AND signal valid:
+    Bot places paper trade automatically
+12. Trade appears in trades tab
+13. Open trade panel shows with live P&L
+14. Trade closes at stop, TP1, TP2, or time stop
+15. Trade history updates with result
+16. Balance updates after close
+17. Stats calculate from trade history
+
+If any of these 17 steps fail: fix and test again.
+Do not mark this section complete until all 17 
+work correctly end to end.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 11 — STATUS INDICATORS (WIRE UP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All the status messages exist in UI but 
+don't update based on real bot state.
+
+Wire up every status indicator:
+
+1. Header connection dot:
+   Green pulse: SSE connected AND tick received 
+     in last 5 seconds
+   Red: SSE disconnected or no tick for 5 seconds
+   Yellow: SSE connected but scoring loading
+
+2. Status banner updates from SSE bot events:
+   isRunning=true + no issues: SAFE (teal)
+   dailyLoss >= 75%: WARNING (gold)
+   killSwitch=true: STOPPED — Kill switch active
+   consecutiveLosses >= limit: STOPPED — losses
+   dailyLossHit: STOPPED — Daily loss limit
+   recoveryMode=true: RECOVERY MODE (amber)
+   winStreakCaution=true: Win streak caution (orange)
+   masterStop=true: System maintenance (purple)
+   circuitBreaker=true: Strategy paused (red)
+
+3. Bot control card pause reason:
+   Reads from bot.pauseReason in SSE
+   Shows exact reason with countdown timers
+   Countdown timers actually count down in real time
+
+4. Cooldown timer:
+   When pauseReason includes cooldown:
+   Show exact minutes and seconds
+   Count down every second in the UI
+   When reaches 0: show "Available now"
+
+5. Session countdown:
+   Shows "London Open in 2h 15m 33s"
+   Counts down every second
+   When session activates: updates to ACTIVE
+
+6. Recovery progress:
+   Shows "Recovery: X% complete — $X / $X target"
+   Updates after each trade
+
+7. Adaptive intelligence:
+   Shows "🧠 AI Learning: 34/50 trades"
+   Updates after each completed trade
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT: DO NOT REBUILD ANYTHING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Do NOT rebuild any UI that already exists.
+Do NOT change any routes that work.
+Do NOT change the database schema.
+ONLY wire up the existing components to 
+real data and real logic.
+
+The scaffold is correct.
+The UI is built.
+The task is making it all actually work.
+
+After completing all sections, run the 
+17-step Clean10test verification in Section 10.
+Every step must pass before reporting complete.

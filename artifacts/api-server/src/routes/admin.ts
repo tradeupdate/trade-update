@@ -468,6 +468,7 @@ router.post("/settings/master-stop", async (req, res) => {
     if (existing.length) await db.update(systemSettingsTable).set({ value: val }).where(eq(systemSettingsTable.key, "master_stop"));
     else await db.insert(systemSettingsTable).values({ key: "master_stop", value: val });
     if (active) logger.warn({ by: req.user!.username }, "Master stop activated");
+    botManager.broadcastAll("maintenance", { active, message: active ? "System maintenance — all trading halted" : null });
     res.json({ masterStop: active, message: active ? "Master stop activated" : "Master stop deactivated" });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
