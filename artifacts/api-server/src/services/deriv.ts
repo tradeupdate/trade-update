@@ -240,8 +240,19 @@ class DerivService {
   }
 
   private buildHigherTimeframes() {
-    this.candles5m = this.groupCandles(this.candles1m, 5);
-    this.candles15m = this.groupCandles(this.candles1m, 15);
+    this.candles5m = this.mergeHigherTf(this.candles5m, 5);
+    this.candles15m = this.mergeHigherTf(this.candles15m, 15);
+  }
+
+  private mergeHigherTf(existing: Candle[], minutesPerCandle: number): Candle[] {
+    if (this.candles1m.length === 0) return existing;
+    const built = this.groupCandles(this.candles1m, minutesPerCandle);
+    if (built.length === 0) return existing;
+    // Keep seeded history that predates what we built from 1m data
+    const oldestBuiltTime = built[0].time;
+    const historicalSeed = existing.filter((c) => c.time < oldestBuiltTime);
+    // Merge: preserved historical + recent data built from 1m feed
+    return [...historicalSeed, ...built].slice(-500);
   }
 
   private groupCandles(candles: Candle[], n: number): Candle[] {

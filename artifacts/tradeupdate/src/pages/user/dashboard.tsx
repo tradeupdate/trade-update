@@ -94,6 +94,7 @@ export default function Dashboard() {
   // Deriv token form
   const [derivTokenInput, setDerivTokenInput] = useState("");
   const [showTokenInput, setShowTokenInput] = useState(false);
+  const [showTokenChars, setShowTokenChars] = useState(false);
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
 
@@ -1194,6 +1195,91 @@ export default function Dashboard() {
                   </span>
                 </div>
               </div>
+            </Card>
+
+            {/* ── Deriv Token ── */}
+            <Card className="p-4 bg-card border border-border rounded-xl">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold">Deriv API Token</h3>
+                {dashboardData?.user?.hasDerivToken && !showTokenInput && (
+                  <Badge className="border-0 bg-primary/20 text-primary text-xs">
+                    <CheckCircle2 className="w-3 h-3 mr-1" /> Connected
+                  </Badge>
+                )}
+              </div>
+
+              {!showTokenInput ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-text-secondary">
+                    {dashboardData?.user?.hasDerivToken
+                      ? "Your Deriv API token is saved. You can replace it below."
+                      : "Connect your Deriv account to enable live trading."}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full border-border text-foreground hover:bg-border gap-2"
+                    onClick={() => setShowTokenInput(true)}
+                  >
+                    <Link2 className="w-4 h-4" />
+                    {dashboardData?.user?.hasDerivToken ? "Replace Token" : "Connect Deriv Account"}
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-text-secondary">
+                    Enter your Deriv API token. Get it from{" "}
+                    <a
+                      href="https://app.deriv.com/account/api-token"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      app.deriv.com/account/api-token
+                    </a>
+                  </p>
+                  <div className="relative">
+                    <Input
+                      type={showTokenChars ? "text" : "password"}
+                      value={derivTokenInput}
+                      onChange={(e) => setDerivTokenInput(e.target.value)}
+                      placeholder="Enter Deriv API token..."
+                      className="bg-background border-border focus-visible:ring-primary pr-10 font-mono text-sm"
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-foreground"
+                      onClick={() => setShowTokenChars((v) => !v)}
+                    >
+                      {showTokenChars ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 border-border text-text-secondary"
+                      onClick={() => { setShowTokenInput(false); setDerivTokenInput(""); setShowTokenChars(false); }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-primary text-black hover:bg-primary/90"
+                      onClick={handleSaveDerivToken}
+                      disabled={!derivTokenInput.trim() || tokenSaving}
+                    >
+                      {tokenSaving ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : tokenSaved ? (
+                        <><CheckCircle2 className="w-4 h-4 mr-1" /> Saved</>
+                      ) : (
+                        "Save Token"
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </Card>
 
             <Card className="p-4 bg-card border border-border rounded-xl">
