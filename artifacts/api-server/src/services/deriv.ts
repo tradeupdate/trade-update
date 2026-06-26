@@ -90,6 +90,7 @@ class DerivService {
 
   private subscribe() {
     this.send({ ticks: SYMBOL, subscribe: 1 });
+    // 1m candles — live subscription + history
     this.send({
       ticks_history: SYMBOL,
       style: "candles",
@@ -97,6 +98,25 @@ class DerivService {
       count: 200,
       end: "latest",
       subscribe: 1,
+      req_id: 1,
+    });
+    // 5m candles — history seed (no subscribe, built from 1m thereafter)
+    this.send({
+      ticks_history: SYMBOL,
+      style: "candles",
+      granularity: 300,
+      count: 120,
+      end: "latest",
+      req_id: 5,
+    });
+    // 15m candles — history seed (scoring needs >= 50)
+    this.send({
+      ticks_history: SYMBOL,
+      style: "candles",
+      granularity: 900,
+      count: 80,
+      end: "latest",
+      req_id: 15,
     });
   }
 
@@ -141,7 +161,7 @@ class DerivService {
     if (msg.msg_type === "candles" || msg.msg_type === "ohlc") {
       const history = msg.candles as Array<Record<string, unknown>>;
       if (history && Array.isArray(history)) {
-        this.candles1m = history.map((c) => ({
+        const mapped: Candle[] = history.map((c) => ({
           time: Number(c.epoch) * 1000,
           open: Number(c.open),
           high: Number(c.high),
@@ -149,7 +169,19 @@ class DerivService {
           close: Number(c.close),
           volume: 0,
         }));
-        this.buildHigherTimeframes();
+        if (msg.req_id === 5) {
+          // Seed 5m store from dedicated history request
+          this.candles5m = mapped;
+          logger.info(`Deriv: seeded ${mapped.length} 5m candles`);
+        } else if (msg.req_id === 15) {
+          // Seed 15m store from dedicated history request
+          this.candles15m = mapped;
+          logger.info(`Deriv: seeded ${mapped.length} 15m candles`);
+        } else {
+          // Default: 1m candle history, rebuild higher TFs from scratch
+          this.candles1m = mapped;
+          this.buildHigherTimeframes();
+        }
       }
       const ohlc = msg.ohlc as Record<string, unknown>;
       if (ohlc) {

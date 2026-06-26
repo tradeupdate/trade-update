@@ -14,8 +14,10 @@ import {
 import { Logo } from "@/components/ui/logo";
 import {
   Loader2, Power, Pause, LogOut, Home, BarChart2, List,
-  Settings as SettingsIcon, TrendingUp, TrendingDown, Brain
+  Settings as SettingsIcon, TrendingUp, TrendingDown, Brain,
+  X, ChevronRight, Eye, EyeOff, Link2, CheckCircle2
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -85,6 +87,36 @@ export default function Dashboard() {
   const [tradeFilter, setTradeFilter] = useState<TradeFilter>("all");
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+
+  // Trade detail modal
+  const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
+
+  // Deriv token form
+  const [derivTokenInput, setDerivTokenInput] = useState("");
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [tokenSaving, setTokenSaving] = useState(false);
+  const [tokenSaved, setTokenSaved] = useState(false);
+
+  const handleSaveDerivToken = async () => {
+    if (!derivTokenInput.trim()) return;
+    setTokenSaving(true);
+    try {
+      const res = await fetch("/api/user/deriv/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ token: derivTokenInput.trim() }),
+      });
+      if (res.ok) {
+        setTokenSaved(true);
+        setDerivTokenInput("");
+        queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
+        setTimeout(() => setTokenSaved(false), 3000);
+      }
+    } finally {
+      setTokenSaving(false);
+    }
+  };
 
   // SSE hook — single source of truth for real-time data
   const sse = useSSE(true);
@@ -291,6 +323,164 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background text-foreground pb-16">
+
+      {/* ─── TRADE DETAIL MODAL ─── */}
+      {selectedTrade && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center"
+          onClick={() => setSelectedTrade(null)}
+        >
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-lg bg-card border-t border-border rounded-t-2xl p-5 max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                {selectedTrade.direction === "BUY" ? (
+                  <TrendingUp className="w-5 h-5 text-primary" />
+                ) : (
+                  <TrendingDown className="w-5 h-5 text-accent-red" />
+                )}
+                <span className="font-bold text-lg">{selectedTrade.direction}</span>
+                <Badge className={`border-0 text-xs ${(selectedTrade.pnl ?? 0) > 0 ? "bg-primary/20 text-primary" : "bg-accent-red/20 text-accent-red"}`}>
+                  {(selectedTrade.pnl ?? 0) > 0 ? "WIN" : "LOSS"}
+                </Badge>
+              </div>
+              <Button variant="ghost" size="icon" className="w-8 h-8" onClick={() => setSelectedTrade(null)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {/* P&L + Entry/Exit */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <Card className="bg-background border-border p-3 text-center">
+                <div className="text-xs text-text-secondary mb-1">P&L</div>
+                <div className={`font-bold tabular-nums ${(selectedTrade.pnl ?? 0) > 0 ? "text-primary" : "text-accent-red"}`}>
+                  {(selectedTrade.pnl ?? 0) > 0 ? "+" : ""}{(selectedTrade.pnl ?? 0).toFixed(2)}
+                </div>
+              </Card>
+              <Card className="bg-background border-border p-3 text-center">
+                <div className="text-xs text-text-secondary mb-1">Entry</div>
+                <div className="font-mono text-sm font-semibold">{selectedTrade.entryPrice?.toFixed(2) ?? "—"}</div>
+              </Card>
+              <Card className="bg-background border-border p-3 text-center">
+                <div className="text-xs text-text-secondary mb-1">Exit</div>
+                <div className="font-mono text-sm font-semibold">{selectedTrade.exitPrice?.toFixed(2) ?? "—"}</div>
+              </Card>
+            </div>
+
+            {/* AI Score Breakdown */}
+            {selectedTrade.scoreTotal != null && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Brain className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-medium">AI Score Breakdown</span>
+                  <span className="ml-auto font-bold tabular-nums text-primary">{selectedTrade.scoreTotal?.toFixed(1)}/50</span>
+                </div>
+                <div className="h-1.5 bg-border rounded-full overflow-hidden mb-3">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, (selectedTrade.scoreTotal / 50) * 100)}%` }} />
+                </div>
+                <div className="space-y-2">
+                  {[
+                    { label: "Trend", value: selectedTrade.scoreTrend, max: 12 },
+                    { label: "Volatility", value: selectedTrade.scoreVolatility, max: 10 },
+                    { label: "Timing", value: selectedTrade.scoreTiming, max: 10 },
+                    { label: "Pullback", value: selectedTrade.scorePullback, max: 10 },
+                    { label: "Risk", value: selectedTrade.scoreRisk, max: 10 },
+                  ].map(({ label, value, max }) => value != null && (
+                    <ScoreBar key={label} label={label} value={value} max={max} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Indicators */}
+            <div className="mb-4">
+              <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">Indicators at Entry</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                {selectedTrade.rsiAtEntry != null && (
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">RSI(14)</span>
+                    <span className={`font-mono font-medium ${selectedTrade.rsiAtEntry < 30 ? "text-primary" : selectedTrade.rsiAtEntry > 70 ? "text-accent-red" : "text-foreground"}`}>
+                      {selectedTrade.rsiAtEntry?.toFixed(1)}
+                    </span>
+                  </div>
+                )}
+                {selectedTrade.stochAtEntry != null && (
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Stoch %K</span>
+                    <span className={`font-mono font-medium ${selectedTrade.stochAtEntry < 20 ? "text-primary" : selectedTrade.stochAtEntry > 80 ? "text-accent-red" : "text-foreground"}`}>
+                      {selectedTrade.stochAtEntry?.toFixed(1)}
+                    </span>
+                  </div>
+                )}
+                {selectedTrade.macdAtEntry != null && (
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">MACD Hist</span>
+                    <span className={`font-mono font-medium ${(selectedTrade.macdAtEntry ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
+                      {selectedTrade.macdAtEntry?.toFixed(3)}
+                    </span>
+                  </div>
+                )}
+                {selectedTrade.bbPosition && (
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">BB Position</span>
+                    <span className={`font-medium ${selectedTrade.bbPosition === "LOWER" ? "text-primary" : selectedTrade.bbPosition === "UPPER" ? "text-accent-red" : "text-foreground"}`}>
+                      {selectedTrade.bbPosition}
+                    </span>
+                  </div>
+                )}
+                {selectedTrade.smcStructure && (
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">SMC</span>
+                    <span className="font-medium text-foreground">{selectedTrade.smcStructure}</span>
+                  </div>
+                )}
+                {selectedTrade.sessionName && (
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Session</span>
+                    <span className="font-medium">{selectedTrade.sessionName}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Trade flags */}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {selectedTrade.breakEvenMoved === 1 && <Badge className="border-0 bg-primary/10 text-primary text-[10px]">Break Even ✓</Badge>}
+              {selectedTrade.partialClosed === 1 && <Badge className="border-0 bg-yellow-500/10 text-yellow-400 text-[10px]">Partial Closed</Badge>}
+              {selectedTrade.pullbackZoneActive === 1 && <Badge className="border-0 bg-blue-500/10 text-blue-400 text-[10px]">Pullback Zone</Badge>}
+              {selectedTrade.isPaper === 1 && <Badge className="border-0 bg-text-secondary/20 text-text-secondary text-[10px]">Paper Trade</Badge>}
+              {selectedTrade.isCopyTrade === 1 && <Badge className="border-0 bg-yellow-500/20 text-yellow-400 text-[10px]">Copy Trade</Badge>}
+            </div>
+
+            {/* SL / TP */}
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div className="bg-background border border-border rounded-lg p-2 text-center">
+                <div className="text-text-secondary mb-0.5">Stop Loss</div>
+                <div className="font-mono text-accent-red font-semibold">{selectedTrade.stopLoss?.toFixed(2) ?? "—"}</div>
+              </div>
+              <div className="bg-background border border-border rounded-lg p-2 text-center">
+                <div className="text-text-secondary mb-0.5">TP1</div>
+                <div className="font-mono text-primary font-semibold">{selectedTrade.takeProfit1?.toFixed(2) ?? "—"}</div>
+              </div>
+              <div className="bg-background border border-border rounded-lg p-2 text-center">
+                <div className="text-text-secondary mb-0.5">TP2</div>
+                <div className="font-mono text-primary font-semibold">{selectedTrade.takeProfit2?.toFixed(2) ?? "—"}</div>
+              </div>
+            </div>
+
+            {/* Duration + Stake */}
+            <div className="mt-3 flex justify-between text-xs text-text-secondary">
+              <span>Stake: <span className="text-foreground font-medium">${selectedTrade.stake?.toFixed(2) ?? "—"}</span></span>
+              <span>Duration: <span className="text-foreground font-medium">{selectedTrade.durationMinutes ?? "—"}m</span></span>
+              <span>{new Date((selectedTrade.openedAt || 0) * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="h-[60px] flex items-center justify-between px-4 border-b border-border bg-card fixed top-0 w-full z-10">
         <Logo size="sm" />
@@ -920,7 +1110,11 @@ export default function Dashboard() {
                   const isWin = pnl > 0;
                   const isOpen = trade.status === "open";
                   return (
-                    <Card key={trade.id} className="bg-card border-border p-3">
+                    <Card
+                      key={trade.id}
+                      className="bg-card border-border p-3 cursor-pointer hover:border-primary/40 transition-colors active:scale-[0.99]"
+                      onClick={() => setSelectedTrade(trade)}
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           {trade.direction === "BUY" ? (
@@ -990,7 +1184,7 @@ export default function Dashboard() {
                 <div className="flex justify-between">
                   <span className="text-text-secondary">Deriv Token</span>
                   <span className={dashboardData?.user?.hasDerivToken ? "text-primary" : "text-accent-red"}>
-                    {dashboardData?.user?.hasDerivToken ? "Connected" : "Not connected"}
+                    {dashboardData?.user?.hasDerivToken ? "✓ Connected" : "Not connected"}
                   </span>
                 </div>
                 <div className="flex justify-between">
