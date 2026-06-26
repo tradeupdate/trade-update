@@ -1,0 +1,48 @@
+I have a Deriv V75 (Volatility 75 Index) trading bot built in JavaScript/Node.js 
+that I'm migrating from a GitHub repo to a fresh Replit. 
+
+Please do a full diagnostic, fix all issues, and help me pick up exactly where I left off.
+
+=== STEP 1: DEPENDENCY FIX ===
+- Check package.json and install all dependencies via `npm install`
+- Confirm these likely packages are present (add if missing):
+  • ws (WebSocket — for Deriv API connection)
+  • dotenv (for environment variables)
+  • node-fetch or axios (if HTTP calls are made)
+  • Any other imports found in the code
+- Fix any version conflicts
+
+=== STEP 2: DERIV API SETUP ===
+- Identify all Deriv API credentials used (API token, app_id, endpoint)
+- The Deriv WebSocket endpoint should be: wss://ws.binaryws.com/websockets/v3?app_id=YOUR_APP_ID
+- Make sure the API token and app_id are stored in Replit Secrets, NOT hardcoded
+- List all required Secrets I need to add in Replit's Secrets tab
+
+=== STEP 3: REPLIT CONFIGURATION ===
+- Create/fix the `.replit` file with the correct run command
+- Make sure the entry point is correct (likely index.js or bot.js)
+- If there's a dashboard/web UI, bind the server to 0.0.0.0 and use process.env.PORT
+- Add a replit.nix or confirm Node.js version is compatible if needed
+
+=== STEP 4: BOT STATE & CONTINUITY ===
+- Check if the bot saves any state (trade history, balance, strategy settings)
+- If state was stored locally before, flag what data I may need to re-enter
+- Confirm the bot's current strategy settings and parameters are intact
+- Tell me what I need to manually reconfigure to continue from where I left off
+
+=== STEP 5: WEBSOCKET & CONNECTION FIX ===
+- Make sure the Deriv WebSocket connection logic is correct
+- Add reconnection logic if missing (Replit connections can drop)
+- Ensure the bot handles connection errors without crashing
+
+=== STEP 6: FINAL CHECKS ===
+- Run the bot and confirm it connects to Deriv API successfully
+- Confirm it's trading V75 (Volatility 75 Index) correctly
+- Show me the current strategy/settings the bot is configured with
+- Give me a summary of what was fixed and what I need to do next
+
+After the full fix, provide:
+✅ List of all Secrets to add in Replit (with placeholder values)
+✅ Correct Run command
+✅ Summary of bot's current strategy & last known state
+✅ Any manual steps I need to take to fully resume

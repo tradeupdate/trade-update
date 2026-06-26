@@ -12,6 +12,10 @@ paths = ["/api"]
 [services.development]
 run = "pnpm --filter @workspace/api-server run dev"
 
+[services.development.env]
+PORT = "8080"
+NODE_ENV = "development"
+
 [services.production]
 
 [services.production.build]
