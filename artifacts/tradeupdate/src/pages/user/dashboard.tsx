@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation } from "wouter";
 import {
   useGetMe,
@@ -129,6 +129,17 @@ export default function Dashboard() {
     }
   );
 
+  // Always-on equity data — fetch all trades for the home tab chart
+  const { data: equityTradesData } = useGetUserTrades(
+    { filter: "all", limit: 200 },
+    {
+      query: {
+        queryKey: ["userTradesEquity"],
+        refetchInterval: 30000,
+      }
+    }
+  );
+
   const { data: stats } = useGetUserStats({
     query: {
       queryKey: ["userStats"],
@@ -163,6 +174,39 @@ export default function Dashboard() {
     : sse.scores?.loading
     ? "bg-yellow-400 animate-pulse"
     : "bg-primary animate-pulse";
+
+  // Compute daily equity curve from trade history
+  const homeEquityData = useMemo(() => {
+    const trades = equityTradesData?.trades ?? [];
+    if (trades.length === 0) return [];
+
+    // Sort oldest first
+    const sorted = [...trades].sort((a, b) => (a.openedAt ?? 0) - (b.openedAt ?? 0));
+
+    // Group PnL by calendar day
+    const byDay: Record<string, number> = {};
+    for (const t of sorted) {
+      const date = new Date((t.openedAt ?? 0) * 1000).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+      byDay[date] = (byDay[date] ?? 0) + (t.pnl ?? 0);
+    }
+
+    // Reconstruct running balance
+    const currentBalance = dashboardData?.user?.accountBalance ?? 0;
+    const totalPnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const startBalance = Math.max(100, currentBalance - totalPnl);
+
+    let running = startBalance;
+    return Object.entries(byDay).map(([date, dayPnl]) => {
+      running += dayPnl;
+      return { date, balance: Math.round(running * 100) / 100 };
+    });
+  }, [equityTradesData, dashboardData?.user?.accountBalance]);
+
+  // Whether the account is profitable overall
+  const isProfit = homeEquityData.length > 1
+    ? homeEquityData[homeEquityData.length - 1].balance >= homeEquityData[0].balance
+    : true;
+  const equityColor = isProfit ? "#00D4A4" : "#FF4060";
 
   // Chart data
   const chartData = candles?.candles?.map((c) => ({
@@ -286,6 +330,64 @@ export default function Dashboard() {
                 </div>
               </Card>
             </div>
+
+            {/* 30-Day Equity Curve */}
+            {homeEquityData.length > 1 && (
+              <Card className="bg-card border-border p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-xs font-medium text-text-secondary uppercase tracking-wide">Account Equity</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-text-secondary">{homeEquityData.length}d</span>
+                    <span className={`text-xs font-bold tabular-nums ${isProfit ? "text-primary" : "text-accent-red"}`}>
+                      {isProfit ? "+" : ""}${(homeEquityData[homeEquityData.length - 1].balance - homeEquityData[0].balance).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+                <div className="h-[120px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={homeEquityData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={equityColor} stopOpacity={0.25} />
+                          <stop offset="95%" stopColor={equityColor} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis
+                        dataKey="date"
+                        stroke="#8890AA"
+                        fontSize={9}
+                        tickLine={false}
+                        axisLine={false}
+                        interval="preserveStartEnd"
+                        tick={{ fill: "#8890AA" }}
+                      />
+                      <YAxis
+                        domain={["auto", "auto"]}
+                        hide
+                      />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "#0F1117", borderColor: "#1C1F2E", color: "#F0F2FF", fontSize: 11 }}
+                        labelStyle={{ color: "#8890AA" }}
+                        formatter={(v: number) => [`$${v.toFixed(2)}`, "Balance"]}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="balance"
+                        stroke={equityColor}
+                        strokeWidth={2}
+                        fill="url(#equityGrad)"
+                        dot={false}
+                        activeDot={{ r: 3, fill: equityColor }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex justify-between text-[10px] text-text-secondary mt-1">
+                  <span>${homeEquityData[0]?.balance.toFixed(0)} start</span>
+                  <span>${homeEquityData[homeEquityData.length - 1]?.balance.toFixed(0)} now</span>
+                </div>
+              </Card>
+            )}
 
             {/* Bot control */}
             <Card className="bg-card border-border p-6 flex flex-col items-center">
