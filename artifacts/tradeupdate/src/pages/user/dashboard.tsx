@@ -202,6 +202,33 @@ export default function Dashboard() {
     });
   }, [equityTradesData, dashboardData?.user?.accountBalance]);
 
+  // Session performance breakdown from all fetched trades
+  const sessionStats = useMemo(() => {
+    const trades = equityTradesData?.trades ?? [];
+    const map: Record<string, { trades: number; wins: number; totalPnl: number }> = {};
+    for (const t of trades) {
+      const name = t.sessionName ?? "Other";
+      if (!map[name]) map[name] = { trades: 0, wins: 0, totalPnl: 0 };
+      map[name].trades++;
+      if ((t.pnl ?? 0) > 0) map[name].wins++;
+      map[name].totalPnl += t.pnl ?? 0;
+    }
+    const SESSION_ORDER = ["London Open", "London/NY Overlap", "NY Afternoon", "Asia", "Other"];
+    return Object.entries(map)
+      .sort((a, b) => {
+        const ai = SESSION_ORDER.indexOf(a[0]);
+        const bi = SESSION_ORDER.indexOf(b[0]);
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+      })
+      .map(([name, s]) => ({
+        name,
+        trades: s.trades,
+        winRate: s.trades > 0 ? Math.round((s.wins / s.trades) * 100) : 0,
+        avgPnl: s.trades > 0 ? Math.round((s.totalPnl / s.trades) * 100) / 100 : 0,
+        totalPnl: Math.round(s.totalPnl * 100) / 100,
+      }));
+  }, [equityTradesData]);
+
   // Whether the account is profitable overall
   const isProfit = homeEquityData.length > 1
     ? homeEquityData[homeEquityData.length - 1].balance >= homeEquityData[0].balance
@@ -277,13 +304,17 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${connDotClass}`} title={sse.connected ? "Connected" : "Disconnected"} />
+          <div className="w-8 h-8 rounded-full bg-border flex items-center justify-center text-xs font-bold text-foreground select-none">
+            {user?.username?.[0]?.toUpperCase() || "U"}
+          </div>
           <Button
             variant="ghost"
             size="icon"
-            className="w-8 h-8 rounded-full bg-border text-xs font-bold"
+            className="w-8 h-8 text-text-secondary hover:text-accent-red hover:bg-accent-red/10 transition-colors"
             onClick={handleLogout}
+            title="Sign out"
           >
-            {user?.username?.[0]?.toUpperCase() || "U"}
+            <LogOut className="w-4 h-4" />
           </Button>
         </div>
       </header>
@@ -827,6 +858,39 @@ export default function Dashboard() {
                       <Line type="monotone" dataKey="balance" stroke="#FFB347" strokeWidth={2} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
+                </div>
+              </Card>
+            )}
+
+            {/* Session Performance Breakdown */}
+            {sessionStats.length > 0 && (
+              <Card className="bg-card border-border p-4">
+                <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-3">Session Performance</div>
+                <div className="space-y-2.5">
+                  {sessionStats.map((s) => {
+                    const wr = s.winRate;
+                    const barColor = wr >= 60 ? "#00D4A4" : wr >= 45 ? "#FFB347" : "#FF4060";
+                    return (
+                      <div key={s.name}>
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <span className="text-foreground font-medium truncate max-w-[140px]">{s.name}</span>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="text-text-secondary tabular-nums">{s.trades}T</span>
+                            <span className="font-bold tabular-nums" style={{ color: barColor }}>{wr}%</span>
+                            <span className={`font-bold tabular-nums ${s.totalPnl >= 0 ? "text-primary" : "text-accent-red"}`}>
+                              {s.totalPnl >= 0 ? "+" : ""}${s.totalPnl.toFixed(0)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="h-1 bg-border rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${wr}%`, backgroundColor: barColor }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </Card>
             )}
