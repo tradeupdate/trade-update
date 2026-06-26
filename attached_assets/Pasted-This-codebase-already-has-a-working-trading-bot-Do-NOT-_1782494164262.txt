@@ -1,0 +1,134 @@
+This codebase already has a working trading bot. Do NOT rewrite or break any existing bot logic, trading engine, API connections, or database schema. Your job is to ADD and UPDATE the following features on top of what already exists. Read all existing files first before touching anything.
+
+---
+
+STEP 1 — READ FIRST
+Before writing any code, read every file in the project. Understand the existing DB schema, existing routes, existing frontend components, existing WebSocket setup, and existing bot logic. Then make only additive changes.
+
+---
+
+STEP 2 — DATABASE ADDITIONS
+Add only the tables and columns that do not already exist:
+
+- If a trades table exists, add columns if missing: symbol, direction, stake, outcome, profit_loss, opened_at, closed_at, duration_seconds, is_demo
+- Add table: bot_activity_log (id, user_id, message, created_at)
+- Add table: system_error_log (id, message, stack, created_at)
+- Add table: audit_log (id, admin_user_id, action, target_user_id, details, created_at)
+- Add table: global_config (id, key, value, updated_at) — seed with rows: default_stake, allowed_symbols, max_per_trade_risk
+- Add columns to users if missing: status (active|suspended), demo_mode (boolean default false), last_login_at, stake_size, max_daily_loss
+- Add table: bot_instances (id, user_id, status running|paused|error|idle, last_heartbeat_at, trades_today, created_at)
+
+Push schema changes with Drizzle after adding.
+
+---
+
+STEP 3 — BACKEND ADDITIONS
+Add these API routes without removing existing ones. Use whatever auth middleware already exists.
+
+User routes to add:
+- GET /api/user/trades — paginated, filterable by start_date, end_date, symbol, outcome (win/loss)
+- GET /api/user/equity-curve — returns [{date, cumulative_pnl}] computed from trades table
+- GET /api/user/activity-log — last 100 rows from bot_activity_log for this user
+- GET /api/user/account-overview — fetches live balance, equity, margin, floating P&L from Deriv WebSocket and returns as JSON
+- PATCH /api/user/settings — updates stake_size and max_daily_loss in DB immediately; bot reads these values on next cycle
+- POST /api/user/bot/toggle — flips bot_instances status between running and paused for this user
+- PATCH /api/user/demo-mode — toggles demo_mode boolean; bot must check this before placing any real trade
+
+Admin routes to add:
+- GET /api/admin/users — all users with: status, total trades count, total P&L sum, last_login_at
+- PATCH /api/admin/users/:id/status — set active or suspended; write to audit_log
+- GET /api/admin/bot-instances — all bot instances with user email, status, trades_today, last_heartbeat_at
+- POST /api/admin/kill-all — sets all bot_instances status to paused immediately; writes to audit_log
+- GET /api/admin/config — returns all rows from global_config
+- PATCH /api/admin/config — updates a config key/value; writes to audit_log
+- GET /api/admin/audit-log — paginated audit_log rows
+- GET /api/admin/system-health — returns: server uptime (process.uptime()), last DB write timestamp, last 10 system_error_log rows, WebSocket connection count
+- GET /api/admin/tokens — returns all users with deriv_api_token masked as "••••••" + last 4 chars
+- DELETE /api/admin/users/:id/token — nulls out the token; writes to audit_log
+- PATCH /api/admin/users/:id/token — sets a new token for the user; writes to audit_log
+
+Wherever the bot logs errors, write them to system_error_log. Wherever the bot takes a trading action (signal detected, trade placed, trade closed, bot paused, circuit breaker hit), write a message to bot_activity_log with the user_id and timestamp.
+
+The bot must read demo_mode from DB before every trade. If demo_mode is true, simulate the trade (log it as is_demo=true in trades table, log in bot_activity_log) but do NOT call the Deriv buy API.
+
+The bot must read stake_size and max_daily_loss from user_settings on every cycle. If the day's total loss exceeds max_daily_loss, pause the bot_instance and log to bot_activity_log.
+
+Bot must write last_heartbeat_at to bot_instances every 30 seconds while running.
+
+---
+
+STEP 4 — REAL-TIME WEBSOCKET LAYER
+If Socket.io or a WebSocket server does not already exist on the backend, add it on the same Express server.
+
+Emit these events to the correct user's socket room (room = user_id):
+- "account_update" — emitted every 5 seconds with live balance, equity, margin, floating P&L from Deriv WebSocket
+- "trade_update" — emitted when a trade opens or closes, with full trade object
+- "activity_log" — emitted whenever a new bot_activity_log row is written
+- "bot_status" — emitted whenever bot_instances status changes
+
+Emit these events to admin room:
+- "all_bot_statuses" — every 10 seconds, all bot instance statuses
+- "system_health" — every 30 seconds, uptime + error count
+
+Frontend connects to this socket on login and listens for these events to update UI without page refresh.
+
+---
+
+STEP 5 — USER DASHBOARD UI
+Build or update the user dashboard. Dark mode by default (dark background #0f1117, card background #1a1d27, accent green #00c896). Fully responsive — works on mobile screens cleanly.
+
+Sections to build:
+
+1. Account Overview — 4 stat cards in a row (stacks to 2x2 on mobile): Live Balance, Equity, Margin Used, Floating P&L. Values update in real time from "account_update" socket event. Color P&L green if positive, red if negative.
+
+2. Bot Status Badge — top of page, always visible. Shows: green dot "Running", yellow dot "Paused", red dot "Error". Shows time since last heartbeat. Kill switch toggle button next to it (calls POST /api/user/bot/toggle). On mobile this badge must be visible without scrolling.
+
+3. Live Activity Feed — scrolling log panel, max height 300px, auto-scrolls to bottom on new entry. Each row: timestamp + message. Color-coded: green for wins, red for losses, white for info. Populated from "activity_log" socket event in real time.
+
+4. Equity Curve Chart — line chart of cumulative P&L over time. Use recharts or chart.js, whichever is already in the project. X axis is date, Y axis is cumulative P&L in USD. Fetched from GET /api/user/equity-curve on load.
+
+5. Trade History Table — columns: Time, Symbol, Direction, Stake, Outcome, P&L, Duration. Paginated, 20 rows per page. Filter bar above table: date range picker, symbol dropdown, outcome dropdown (All/Win/Loss). Fetched from GET /api/user/trades with query params.
+
+6. Settings Panel — form with: Stake Size (number input), Max Daily Loss (number input), Demo Mode toggle (labeled clearly "Demo Mode — no real trades placed"). Save button calls PATCH /api/user/settings and PATCH /api/user/demo-mode. Show success toast on save. Changes take effect on the bot's next cycle without restart.
+
+---
+
+STEP 6 — ADMIN DASHBOARD UI
+Build or update the admin dashboard. Same dark theme. Accessible only to users with role=admin.
+
+Sections to build:
+
+1. Global Kill Switch — large prominent red button at the top: "PAUSE ALL BOTS". Calls POST /api/admin/kill-all. Shows confirmation modal before executing. Shows last time it was triggered from audit_log.
+
+2. User Management Table — columns: Email, Status, Total Trades, Total P&L, Last Login, Actions. Actions column: Suspend/Activate button, View Token button (shows masked token), Revoke Token button, Set New Token button (opens modal with input). Status badge green=active, red=suspended. All actions write to audit_log.
+
+3. Bot Instance Overview — table: User Email, Status badge, Trades Today, Last Heartbeat. Refreshed every 10 seconds from "all_bot_statuses" socket event.
+
+4. System Health Panel — cards: Server Uptime, WebSocket Connections, Last DB Write. Below that: a scrollable list of last 10 error log entries with timestamp and message. Refreshed from "system_health" socket event.
+
+5. Config Management — editable table of global_config rows. Each row: Key, Value, editable input, Save button. Saves call PATCH /api/admin/config. Show success toast per row.
+
+6. Audit Log — paginated table: Timestamp, Admin, Action, Target User, Details. 20 rows per page.
+
+---
+
+STEP 7 — ONBOARDING FLOW
+If a user logs in for the first time and has no deriv_api_token saved, redirect them to an onboarding wizard instead of the dashboard. The wizard has 3 steps:
+
+Step 1 — Connect Account: Input field for Deriv API token. On submit, validate the token by calling Deriv WebSocket authorize endpoint. If valid, save token and show account name + balance as confirmation. If invalid, show error and let them retry.
+
+Step 2 — Set Preferences: Inputs for Stake Size and Max Daily Loss. Pre-fill with global_config defaults. Save button writes to user_settings.
+
+Step 3 — Demo Test: Explain that demo mode will run a simulated trade using live prices without real money. Button "Run Demo Trade". This calls the bot to execute one cycle in demo mode. Show the result (win/loss, P&L) in a result card. Then show "Go Live" button which sets demo_mode=false and redirects to main dashboard.
+
+---
+
+STEP 8 — FINAL CHECKS
+- All DB changes must be pushed via Drizzle push
+- All new routes must be tested with a quick health check log on server start
+- No existing bot logic, trading engine, or working routes should be removed or broken
+- Dark mode must be consistent across all pages
+- Mobile layout must be tested — kill switch and bot status badge visible on 375px screen width
+- Socket rooms must be joined on login and left on logout
+- All admin actions must write to audit_log with admin's user_id, action name, target user_id, and a details string
+- Demo mode must be enforced in the bot — never call the real Deriv buy API when demo_mode=true

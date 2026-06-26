@@ -47,6 +47,8 @@ export const tradesTable = pgTable("trades", {
   closedAt: integer("closed_at"),
   tp1HitAt: integer("tp1_hit_at"),
   tp2HitAt: integer("tp2_hit_at"),
+  symbol: text("symbol").default("R_75"),
+  isDemo: integer("is_demo").default(0),
 });
 
 export const insertTradeSchema = createInsertSchema(tradesTable).omit({ id: true });

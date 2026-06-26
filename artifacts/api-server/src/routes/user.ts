@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   usersTable, tradesTable, signalLogTable, strategiesTable,
-  sessionPerformanceTable, systemSettingsTable
+  sessionPerformanceTable, systemSettingsTable, botActivityLogTable
 } from "@workspace/db";
 import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth.js";
@@ -479,6 +479,115 @@ router.get("/stream", async (req, res) => {
     clearInterval(statsInterval);
     clearInterval(keepalive);
   });
+});
+
+// Equity curve
+router.get("/equity-curve", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const trades = await db.select({
+      pnl: tradesTable.pnl,
+      closedAt: tradesTable.closedAt,
+    }).from(tradesTable)
+      .where(and(eq(tradesTable.userId, userId), eq(tradesTable.status, "closed")))
+      .orderBy(tradesTable.closedAt);
+
+    let cumPnl = 0;
+    const curve = trades.map(t => {
+      cumPnl = Math.round((cumPnl + (t.pnl || 0)) * 100) / 100;
+      return {
+        date: new Date((t.closedAt || 0) * 1000).toISOString().split("T")[0],
+        cumulative_pnl: cumPnl,
+      };
+    });
+    res.json({ curve });
+  } catch (err) {
+    logger.error({ err }, "Equity curve error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Activity log
+router.get("/activity-log", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const limit = Math.min(parseInt(String(req.query["limit"] || "100")), 200);
+    const logs = await db.select().from(botActivityLogTable)
+      .where(eq(botActivityLogTable.userId, userId))
+      .orderBy(desc(botActivityLogTable.createdAt))
+      .limit(limit);
+    res.json({ logs });
+  } catch (err) {
+    logger.error({ err }, "Activity log error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Account overview
+router.get("/account-overview", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const user = rows[0];
+    if (!user) { res.status(404).json({ error: "Not found" }); return; }
+    const state = botManager.get(userId);
+    const balance = user.accountBalance || 5000;
+    const openPnl = state?.openTrade?.pnl || 0;
+    res.json({
+      balance,
+      equity: Math.round((balance + openPnl) * 100) / 100,
+      floatingPnl: openPnl,
+      dailyPnl: state?.dailyPnl || 0,
+      drawdown: state?.currentDrawdown || 0,
+      peakBalance: user.peakBalance || balance,
+      tradingMode: user.tradingMode || "paper",
+      demoMode: user.demoMode === 1,
+    });
+  } catch (err) {
+    logger.error({ err }, "Account overview error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PATCH user settings (stake size, max daily loss)
+router.patch("/settings", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const { stakeSize, maxDailyLoss } = req.body;
+    const update: Record<string, unknown> = {};
+    if (stakeSize != null) {
+      const s = Number(stakeSize);
+      if (isNaN(s) || s < 0.5 || s > 1000) { res.status(400).json({ error: "stakeSize must be 0.5–1000" }); return; }
+      update.stakeSize = s;
+    }
+    if (maxDailyLoss != null) {
+      const m = Number(maxDailyLoss);
+      if (isNaN(m) || m < 1 || m > 100) { res.status(400).json({ error: "maxDailyLoss must be 1–100 (%)" }); return; }
+      update.maxDailyLoss = m;
+    }
+    if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
+    await db.update(usersTable).set(update).where(eq(usersTable.id, userId));
+    res.json({ message: "Settings updated", ...update });
+  } catch (err) {
+    logger.error({ err }, "Update settings error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Toggle demo mode
+router.patch("/demo-mode", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const user = rows[0];
+    if (!user) { res.status(404).json({ error: "Not found" }); return; }
+    const next = user.demoMode === 1 ? 0 : 1;
+    await db.update(usersTable).set({ demoMode: next }).where(eq(usersTable.id, userId));
+    res.json({ demoMode: next === 1, message: next === 1 ? "Demo mode enabled" : "Demo mode disabled" });
+  } catch (err) {
+    logger.error({ err }, "Demo mode toggle error");
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 export default router;

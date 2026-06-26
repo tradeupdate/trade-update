@@ -15,7 +15,8 @@ import { Logo } from "@/components/ui/logo";
 import {
   Loader2, Power, Pause, LogOut, Home, BarChart2, List,
   Settings as SettingsIcon, TrendingUp, TrendingDown, Brain,
-  X, ChevronRight, Eye, EyeOff, Link2, CheckCircle2
+  X, ChevronRight, Eye, EyeOff, Link2, CheckCircle2,
+  Activity, Save
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -98,6 +99,17 @@ export default function Dashboard() {
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
 
+  // Bot settings form
+  const [stakeInput, setStakeInput] = useState("");
+  const [maxLossInput, setMaxLossInput] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [demoToggling, setDemoToggling] = useState(false);
+
+  // Activity log history (fetched on first open)
+  const [activityHistory, setActivityHistory] = useState<Array<{message: string; level: string; createdAt: number}>>([]);
+  const [activityLoaded, setActivityLoaded] = useState(false);
+
   const handleSaveDerivToken = async () => {
     if (!derivTokenInput.trim()) return;
     setTokenSaving(true);
@@ -116,6 +128,58 @@ export default function Dashboard() {
       }
     } finally {
       setTokenSaving(false);
+    }
+  };
+
+  // Populate settings form from dashboard data
+  useEffect(() => {
+    if (dashboardData?.user) {
+      const u = dashboardData.user as any;
+      if (u.stakeSize != null && stakeInput === "") setStakeInput(String(u.stakeSize));
+      if (u.maxDailyLoss != null && maxLossInput === "") setMaxLossInput(String(u.maxDailyLoss));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardData?.user]);
+
+  // Fetch activity log history when activity tab opens
+  useEffect(() => {
+    if (activeTab !== "activity" || activityLoaded) return;
+    fetch("/api/user/activity-log?limit=100", { credentials: "include" })
+      .then(r => r.json())
+      .then(d => { setActivityHistory(d.logs || []); setActivityLoaded(true); })
+      .catch(() => {});
+  }, [activeTab, activityLoaded]);
+
+  const handleSaveSettings = async () => {
+    const body: Record<string, number> = {};
+    if (stakeInput) body.stakeSize = parseFloat(stakeInput);
+    if (maxLossInput) body.maxDailyLoss = parseFloat(maxLossInput);
+    if (Object.keys(body).length === 0) return;
+    setSettingsSaving(true);
+    try {
+      const res = await fetch("/api/user/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        setSettingsSaved(true);
+        queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
+        setTimeout(() => setSettingsSaved(false), 2500);
+      }
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const handleToggleDemoMode = async () => {
+    setDemoToggling(true);
+    try {
+      await fetch("/api/user/demo-mode", { method: "PATCH", credentials: "include" });
+      queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
+    } finally {
+      setDemoToggling(false);
     }
   };
 
@@ -1164,6 +1228,61 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* ─── ACTIVITY TAB ─── */}
+        {activeTab === "activity" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold">Activity Log</h2>
+              <span className="text-xs text-text-secondary">{(sse.activity.length + activityHistory.length) > 0 ? `${Math.min(sse.activity.length + activityHistory.length, 100)} events` : ""}</span>
+            </div>
+            <div className="space-y-0">
+              {(() => {
+                const seen = new Set<string>();
+                const merged = [...sse.activity, ...activityHistory].filter(log => {
+                  const key = `${log.createdAt}|${log.message}`;
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                }).slice(0, 100);
+                if (merged.length === 0) {
+                  return (
+                    <div className="text-center text-text-secondary p-10 border border-dashed border-border rounded-xl">
+                      <Activity className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                      <p>No activity yet.</p>
+                      <p className="text-xs mt-1">Start the bot to see events here.</p>
+                    </div>
+                  );
+                }
+                return merged.map((log, i) => {
+                  const dotColor =
+                    log.level === "win" ? "bg-primary" :
+                    log.level === "loss" ? "bg-accent-red" :
+                    log.level === "warning" ? "bg-yellow-400" :
+                    log.level === "error" ? "bg-accent-red" :
+                    "bg-text-secondary";
+                  const textColor =
+                    log.level === "win" ? "text-primary" :
+                    log.level === "loss" ? "text-accent-red" :
+                    log.level === "warning" ? "text-yellow-400" :
+                    log.level === "error" ? "text-accent-red" :
+                    "text-foreground";
+                  return (
+                    <div key={i} className="flex gap-3 py-2.5 border-b border-border/40 last:border-0 items-start">
+                      <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${dotColor}`} />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm ${textColor}`}>{log.message}</p>
+                      </div>
+                      <span className="text-[10px] text-text-secondary font-mono shrink-0 mt-0.5">
+                        {new Date(log.createdAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        )}
+
         {/* ─── SETTINGS TAB ─── */}
         {activeTab === "settings" && (
           <div className="space-y-4">
@@ -1298,6 +1417,66 @@ export default function Dashboard() {
               </div>
             </Card>
 
+            {/* Bot Settings */}
+            <Card className="p-4 bg-card border border-border rounded-xl">
+              <h3 className="font-bold mb-4">Bot Settings</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs text-text-secondary block mb-1.5">Fixed Stake Size ($)</label>
+                  <Input
+                    type="number"
+                    value={stakeInput}
+                    onChange={(e) => setStakeInput(e.target.value)}
+                    placeholder="Auto (profile-based)"
+                    className="bg-background border-border focus-visible:ring-primary"
+                    min="0.5" max="1000" step="0.5"
+                  />
+                  <p className="text-[11px] text-text-secondary mt-1">Leave blank to use profile % sizing</p>
+                </div>
+                <div>
+                  <label className="text-xs text-text-secondary block mb-1.5">Max Daily Loss (%)</label>
+                  <Input
+                    type="number"
+                    value={maxLossInput}
+                    onChange={(e) => setMaxLossInput(e.target.value)}
+                    placeholder="Auto (5% / 8% / 12%)"
+                    className="bg-background border-border focus-visible:ring-primary"
+                    min="1" max="100" step="0.5"
+                  />
+                  <p className="text-[11px] text-text-secondary mt-1">Overrides profile default</p>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <div>
+                    <p className="text-sm font-medium">Demo Mode</p>
+                    <p className="text-[11px] text-text-secondary">Trades are flagged as simulated</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className={`min-w-[80px] border-border ${(dashboardData?.user as any)?.demoMode ? "text-primary border-primary/40 bg-primary/5" : "text-text-secondary"}`}
+                    onClick={handleToggleDemoMode}
+                    disabled={demoToggling}
+                  >
+                    {demoToggling ? <Loader2 className="w-4 h-4 animate-spin" /> : (dashboardData?.user as any)?.demoMode ? "ON" : "OFF"}
+                  </Button>
+                </div>
+                <Button
+                  className="w-full bg-primary text-black hover:bg-primary/90"
+                  onClick={handleSaveSettings}
+                  disabled={settingsSaving}
+                >
+                  {settingsSaving ? (
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  ) : settingsSaved ? (
+                    <CheckCircle2 className="w-4 h-4 mr-2" />
+                  ) : (
+                    <Save className="w-4 h-4 mr-2" />
+                  )}
+                  {settingsSaved ? "Saved!" : "Save Settings"}
+                </Button>
+              </div>
+            </Card>
+
             <Button
               variant="outline"
               className="w-full text-accent-red border-accent-red/20 hover:bg-accent-red/10 hover:text-accent-red"
@@ -1316,6 +1495,7 @@ export default function Dashboard() {
           { id: "home", label: "Home", icon: Home },
           { id: "chart", label: "Chart", icon: BarChart2 },
           { id: "trades", label: "Trades", icon: List },
+          { id: "activity", label: "Activity", icon: Activity },
           { id: "settings", label: "Settings", icon: SettingsIcon }
         ].map(({ id, label, icon: Icon }) => (
           <button

@@ -87,6 +87,12 @@ export interface AlertPayload {
   message: string;
 }
 
+export interface ActivityPayload {
+  message: string;
+  level: "info" | "win" | "loss" | "warning" | "error";
+  createdAt: number;
+}
+
 export interface TradePayload {
   action: "opened" | "closed" | "partial_close" | "break_even";
   trade?: any;
@@ -104,6 +110,7 @@ interface SSEState {
   stats: StatsPayload | null;
   lastTrade: TradePayload | null;
   alerts: AlertPayload[];
+  activity: ActivityPayload[];
   connected: boolean;
   lastTickTime: number;
 }
@@ -111,7 +118,7 @@ interface SSEState {
 export function useSSE(enabled = true) {
   const [state, setState] = useState<SSEState>({
     tick: null, scores: null, bot: null, session: null,
-    stats: null, lastTrade: null, alerts: [], connected: false, lastTickTime: 0,
+    stats: null, lastTrade: null, alerts: [], activity: [], connected: false, lastTickTime: 0,
   });
 
   const esRef = useRef<EventSource | null>(null);
@@ -181,6 +188,13 @@ export function useSSE(enabled = true) {
             alerts: [...s.alerts.slice(-9), payload as AlertPayload],
           }));
           onAlertRef.current?.(payload as AlertPayload);
+          break;
+
+        case "activity":
+          setState(s => ({
+            ...s,
+            activity: [payload as ActivityPayload, ...s.activity.slice(0, 99)],
+          }));
           break;
 
         case "maintenance":

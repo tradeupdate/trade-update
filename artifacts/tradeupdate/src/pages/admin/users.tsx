@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2, MoreVertical, Check, X, Shield, PlayCircle, StopCircle, Trash2 } from "lucide-react";
+import { Loader2, MoreVertical, Check, X, Shield, PlayCircle, StopCircle, Trash2, PauseCircle, Key, KeyRound } from "lucide-react";
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -65,6 +65,41 @@ export default function AdminUsers() {
           queryClient.invalidateQueries({ queryKey: ["adminUsers"] });
         }
       });
+    }
+  };
+
+  const handleToggleStatus = async (id: string, currentStatus: string) => {
+    const newStatus = currentStatus === "suspended" ? "active" : "suspended";
+    if (newStatus === "suspended" && !confirm(`Suspend this user? Their bot will be stopped.`)) return;
+    try {
+      const res = await fetch(`/api/admin/users/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (res.ok) {
+        toast({ title: `User ${newStatus === "suspended" ? "suspended" : "reactivated"}` });
+        queryClient.invalidateQueries({ queryKey: ["adminUsers"] });
+      }
+    } catch {
+      toast({ title: "Failed to update status", variant: "destructive" });
+    }
+  };
+
+  const handleRevokeToken = async (id: string) => {
+    if (!confirm("Revoke this user's Deriv token? They will need to re-enter it.")) return;
+    try {
+      const res = await fetch(`/api/admin/users/${id}/token`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) {
+        toast({ title: "Token revoked" });
+        queryClient.invalidateQueries({ queryKey: ["adminUsers"] });
+      }
+    } catch {
+      toast({ title: "Failed to revoke token", variant: "destructive" });
     }
   };
 
@@ -143,10 +178,23 @@ export default function AdminUsers() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="bg-card border-border">
-                          <DropdownMenuItem className="text-foreground focus:bg-background cursor-pointer">
-                            Edit Profile
+                          <DropdownMenuItem
+                            className="cursor-pointer focus:bg-background"
+                            onClick={() => handleToggleStatus(user.id, (user as any).status || "active")}
+                          >
+                            {(user as any).status === "suspended" ? (
+                              <><PlayCircle className="w-4 h-4 mr-2 text-primary" /> Reactivate</>
+                            ) : (
+                              <><PauseCircle className="w-4 h-4 mr-2 text-yellow-400" /> Suspend</>
+                            )}
                           </DropdownMenuItem>
-                          <DropdownMenuItem 
+                          <DropdownMenuItem
+                            className="cursor-pointer focus:bg-background"
+                            onClick={() => handleRevokeToken(user.id)}
+                          >
+                            <KeyRound className="w-4 h-4 mr-2 text-text-secondary" /> Revoke Token
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
                             className="text-accent-red focus:bg-accent-red/10 focus:text-accent-red cursor-pointer"
                             onClick={() => handleDelete(user.id)}
                           >

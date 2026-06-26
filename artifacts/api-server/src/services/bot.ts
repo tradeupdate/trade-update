@@ -1,7 +1,8 @@
 import { db } from "@workspace/db";
 import {
   usersTable, tradesTable, signalLogTable, strategiesTable,
-  adaptiveWeightsTable, sessionPerformanceTable, systemSettingsTable
+  adaptiveWeightsTable, sessionPerformanceTable, systemSettingsTable,
+  botActivityLogTable, systemErrorLogTable, botInstancesTable
 } from "@workspace/db";
 import { eq, and, gte, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -89,6 +90,13 @@ class BotManager {
     this.monitorInterval = setInterval(() => {
       this.monitorOpenTrades();
       this.checkNewCandle();
+      this.tickCount++;
+      // Heartbeat every 30s (6 × 5s ticks)
+      if (this.tickCount % 6 === 0) {
+        for (const userId of this.bots.keys()) {
+          this.writeHeartbeat(userId).catch(() => {});
+        }
+      }
     }, 5000);
   }
 
@@ -213,13 +221,14 @@ class BotManager {
     }
     state.peakBalance = peak;
     const profileMaxLossPct: Record<string, number> = { safe: 5, pro: 8, aggressive: 12 };
-    const maxLossPct = profileMaxLossPct[user.tradingProfile || "safe"] || 5;
+    const maxLossPct = user.maxDailyLoss ?? (profileMaxLossPct[user.tradingProfile || "safe"] || 5);
     const dailyLossPct = ((state.dailyStartBalance - balance) / state.dailyStartBalance) * 100;
     if (dailyLossPct >= maxLossPct) {
       state.dailyLossHit = true;
       state.isRunning = false;
       state.pauseReason = "Daily loss limit reached";
       this.broadcastBotEvent(userId, state);
+      this.logActivity(userId, `Daily loss limit of ${maxLossPct}% reached — bot stopped`, "error").catch(() => {});
       return;
     }
     if (dailyLossPct >= maxLossPct * 0.75) {
@@ -398,12 +407,18 @@ class BotManager {
   private async executeTrade(userId: string, user: any, strategy: any, result: ScoreResult, sessionName: string | null, state: BotState) {
     const balance = user.accountBalance || 5000;
     const profile = user.tradingProfile || "safe";
-    const riskMap: Record<string, number> = { safe: 1.0, pro: 1.5, aggressive: 2.0 };
-    const riskPct = riskMap[profile] || 1.0;
-    let stake = (balance * riskPct) / 100;
+    let stake: number;
+    if (user.stakeSize != null && user.stakeSize > 0) {
+      stake = user.stakeSize;
+    } else {
+      const riskMap: Record<string, number> = { safe: 1.0, pro: 1.5, aggressive: 2.0 };
+      const riskPct = riskMap[profile] || 1.0;
+      stake = (balance * riskPct) / 100;
+    }
     if (state.winStreakCautionActive) stake *= 0.8;
     if (state.recoveryModeActive) stake *= 0.5;
-    stake = Math.max(1, Math.min(50, Math.round(stake * 100) / 100));
+    stake = Math.max(0.5, Math.min(1000, Math.round(stake * 100) / 100));
+    const isDemo = user.demoMode === 1;
 
     const tick = derivService.getLatestTick();
     const entryPrice = tick.price;
@@ -426,6 +441,8 @@ class BotManager {
       scoreVolatility: result.volatility, scoreTiming: result.timing,
       scorePullback: result.pullback, scoreRisk: result.risk,
       isCopyTrade: 0, isPaper: user.tradingMode === "paper" ? 1 : 0,
+      isDemo: isDemo ? 1 : 0,
+      symbol: "R_75",
       tradingMode: user.tradingMode || "paper", status: "open",
       stopLoss, takeProfit1, takeProfit2,
       recoveryModeActive: state.recoveryModeActive ? 1 : 0,
@@ -451,6 +468,7 @@ class BotManager {
       trade: state.openTrade
     });
     this.broadcastBotEvent(userId, state);
+    this.logActivity(userId, `Trade opened: ${result.direction} @ ${entryPrice.toFixed(2)} — Stake $${stake.toFixed(2)} — Score ${result.total.toFixed(0)}${isDemo ? " [DEMO]" : ""}`, "info").catch(() => {});
     logger.info({ userId, tradeId, direction: result.direction, score: result.total }, "Trade opened");
   }
 
@@ -596,6 +614,9 @@ class BotManager {
 
     this.broadcastToUser(userId, "trade", { action: "closed", result: isWin ? "win" : "loss", pnl, tradeId: trade.id, exitPrice });
     this.broadcastBotEvent(userId, state);
+    const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+    const closeReasonLabel = reason === "stop_loss" ? "Stop loss" : reason === "tp2" ? "Take profit" : reason === "time_stop" ? "Time stop" : reason;
+    this.logActivity(userId, `Trade closed: ${closeReasonLabel} — ${pnlStr} — ${isWin ? "WIN" : "LOSS"}`, isWin ? "win" : "loss").catch(() => {});
     logger.info({ userId, tradeId: trade.id, pnl, reason }, "Trade closed");
   }
 
@@ -664,6 +685,8 @@ class BotManager {
       state.pauseReason = null;
       state.dailyLossHit = false;
       this.broadcastBotEvent(userId, state);
+      this.logActivity(userId, "Bot started", "info").catch(() => {});
+      this.writeHeartbeat(userId).catch(() => {});
     }
   }
 
@@ -672,6 +695,8 @@ class BotManager {
     if (state) {
       state.isRunning = false;
       this.broadcastBotEvent(userId, state);
+      this.logActivity(userId, "Bot stopped", "info").catch(() => {});
+      this.writeHeartbeat(userId).catch(() => {});
     }
   }
 
@@ -682,6 +707,8 @@ class BotManager {
       state.isRunning = false;
       state.pauseReason = "Kill switch active";
       this.broadcastBotEvent(userId, state);
+      this.logActivity(userId, "Kill switch activated", "warning").catch(() => {});
+      this.writeHeartbeat(userId).catch(() => {});
     }
   }
 
@@ -690,6 +717,7 @@ class BotManager {
     if (state) {
       state.killSwitchActive = false;
       state.pauseReason = null;
+      this.logActivity(userId, "Kill switch reset", "info").catch(() => {});
     }
   }
 
@@ -701,6 +729,64 @@ class BotManager {
     for (const userId of this.sseClients.keys()) {
       this.broadcastToUser(userId, type, payload);
     }
+  }
+
+  async logActivity(userId: string, message: string, level: "info" | "win" | "loss" | "warning" | "error" = "info") {
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      await db.insert(botActivityLogTable).values({
+        id: randomUUID(), userId, message, level, createdAt: now,
+      });
+    } catch {}
+    this.broadcastToUser(userId, "activity", { message, level, createdAt: now });
+  }
+
+  async logError(message: string, stack?: string) {
+    try {
+      await db.insert(systemErrorLogTable).values({
+        id: randomUUID(), message, stack: stack || null, createdAt: Math.floor(Date.now() / 1000),
+      });
+    } catch {}
+    logger.error({ message, stack }, "System error logged");
+  }
+
+  async writeHeartbeat(userId: string) {
+    const state = this.bots.get(userId);
+    if (!state) return;
+    const now = Math.floor(Date.now() / 1000);
+    const status = state.isRunning ? "running" : state.killSwitchActive ? "killed" : "idle";
+    try {
+      const existing = await db.select().from(botInstancesTable).where(eq(botInstancesTable.userId, userId)).limit(1);
+      if (existing.length) {
+        await db.update(botInstancesTable).set({
+          status, lastHeartbeatAt: now, tradesToday: state.todayTrades,
+        }).where(eq(botInstancesTable.userId, userId));
+      } else {
+        await db.insert(botInstancesTable).values({
+          id: randomUUID(), userId, status, lastHeartbeatAt: now,
+          tradesToday: state.todayTrades, createdAt: now,
+        });
+      }
+    } catch {}
+  }
+
+  killAll() {
+    for (const [userId, state] of this.bots.entries()) {
+      if (state.isRunning || !state.killSwitchActive) {
+        state.killSwitchActive = true;
+        state.isRunning = false;
+        state.pauseReason = "Kill switch active";
+        this.broadcastBotEvent(userId, state);
+      }
+    }
+  }
+
+  countRunning(): number {
+    let count = 0;
+    for (const state of this.bots.values()) {
+      if (state.isRunning) count++;
+    }
+    return count;
   }
 }
 

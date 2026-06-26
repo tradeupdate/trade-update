@@ -3,7 +3,9 @@ import { db } from "@workspace/db";
 import {
   usersTable, pendingSignupsTable, tradesTable, strategiesTable,
   tradingProfilesTable, copyTradesTable, backtestResultsTable,
-  systemSettingsTable, authLogTable, signalLogTable
+  systemSettingsTable, authLogTable, signalLogTable,
+  auditLogTable, globalConfigTable, botActivityLogTable,
+  systemErrorLogTable, botInstancesTable
 } from "@workspace/db";
 import { eq, desc, sql, and, gte } from "drizzle-orm";
 import { requireAdmin } from "../middleware/auth.js";
@@ -14,6 +16,7 @@ import { derivService } from "../services/deriv.js";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
+import { encrypt } from "../lib/crypto.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -574,6 +577,201 @@ router.get("/auth-logs", async (req, res) => {
     const total = await db.select({ count: sql<number>`count(*)` }).from(authLogTable);
     res.json({ logs, total: Number(total[0]?.count || 0) });
   } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PATCH user status (suspend/activate)
+router.patch("/users/:userId/status", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { status } = req.body;
+    if (!["active", "suspended"].includes(status)) {
+      res.status(400).json({ error: "Status must be active or suspended" });
+      return;
+    }
+    await db.update(usersTable).set({
+      status,
+      isActive: status === "active" ? 1 : 0,
+    }).where(eq(usersTable.id, userId));
+    if (status === "suspended") botManager.kill(userId);
+    await db.insert(auditLogTable).values({
+      id: randomUUID(), adminUserId: req.user!.userId, action: `user_${status}`,
+      targetUserId: userId, details: `User status changed to ${status}`,
+      createdAt: Math.floor(Date.now() / 1000),
+    });
+    res.json({ message: `User ${status}` });
+  } catch (err) {
+    logger.error({ err }, "User status update error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Bot instances
+router.get("/bot-instances", async (_req, res) => {
+  try {
+    const users = await db.select({
+      id: usersTable.id,
+      username: usersTable.username,
+      email: usersTable.email,
+      tradingMode: usersTable.tradingMode,
+    }).from(usersTable).where(eq(usersTable.isActive, 1));
+
+    const instances = users.map(u => {
+      const state = botManager.get(u.id);
+      return {
+        userId: u.id, username: u.username, email: u.email,
+        tradingMode: u.tradingMode,
+        status: state?.isRunning ? "running" : state?.killSwitchActive ? "killed" : "idle",
+        tradesToday: state?.todayTrades || 0,
+        dailyPnl: state?.dailyPnl || 0,
+        consecutiveLosses: state?.consecutiveLosses || 0,
+        openTrade: !!state?.openTrade,
+        recoveryMode: state?.recoveryModeActive || false,
+        dailyLossHit: state?.dailyLossHit || false,
+      };
+    });
+    res.json({ instances });
+  } catch (err) {
+    logger.error({ err }, "Bot instances error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Kill all bots
+router.post("/kill-all", async (req, res) => {
+  try {
+    botManager.killAll();
+    botManager.broadcastAll("maintenance", { active: true, message: "All bots paused by administrator" });
+    await db.insert(auditLogTable).values({
+      id: randomUUID(), adminUserId: req.user!.userId, action: "kill_all",
+      targetUserId: null, details: `All bots killed by ${req.user!.username}`,
+      createdAt: Math.floor(Date.now() / 1000),
+    });
+    logger.warn({ by: req.user!.username }, "Kill all bots triggered");
+    res.json({ message: "All bots killed" });
+  } catch (err) {
+    logger.error({ err }, "Kill all error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Global config
+router.get("/config", async (_req, res) => {
+  try {
+    const config = await db.select().from(globalConfigTable);
+    res.json({ config });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.patch("/config", async (req, res) => {
+  try {
+    const { key, value } = req.body;
+    if (!key || value === undefined) { res.status(400).json({ error: "key and value required" }); return; }
+    const now = Math.floor(Date.now() / 1000);
+    const existing = await db.select().from(globalConfigTable).where(eq(globalConfigTable.key, key)).limit(1);
+    if (existing.length) {
+      await db.update(globalConfigTable).set({ value: String(value), updatedAt: now }).where(eq(globalConfigTable.key, key));
+    } else {
+      await db.insert(globalConfigTable).values({ id: randomUUID(), key, value: String(value), updatedAt: now });
+    }
+    await db.insert(auditLogTable).values({
+      id: randomUUID(), adminUserId: req.user!.userId, action: "config_update",
+      targetUserId: null, details: `${key}=${value}`, createdAt: now,
+    });
+    res.json({ message: "Config updated", key, value });
+  } catch (err) {
+    logger.error({ err }, "Config update error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Audit log
+router.get("/audit-log", async (req, res) => {
+  try {
+    const page = parseInt(String(req.query["page"] || "1"));
+    const limit = parseInt(String(req.query["limit"] || "20"));
+    const logs = await db.select().from(auditLogTable)
+      .orderBy(desc(auditLogTable.createdAt))
+      .limit(limit).offset((page - 1) * limit);
+    const total = await db.select({ count: sql<number>`count(*)` }).from(auditLogTable);
+    res.json({ logs, total: Number(total[0]?.count || 0) });
+  } catch (err) {
+    logger.error({ err }, "Audit log error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// System health
+router.get("/system-health", async (_req, res) => {
+  try {
+    const errors = await db.select().from(systemErrorLogTable)
+      .orderBy(desc(systemErrorLogTable.createdAt)).limit(20);
+    res.json({
+      uptime: Math.floor(process.uptime()),
+      activeBotsCount: botManager.countRunning(),
+      memUsageMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      nodeEnv: process.env["NODE_ENV"] || "development",
+      errors,
+    });
+  } catch (err) {
+    logger.error({ err }, "System health error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Token overview
+router.get("/tokens", async (_req, res) => {
+  try {
+    const users = await db.select({
+      id: usersTable.id, username: usersTable.username,
+      email: usersTable.email, derivTokenEncrypted: usersTable.derivTokenEncrypted,
+    }).from(usersTable);
+    const tokens = users.map(u => ({
+      userId: u.id, username: u.username, email: u.email,
+      hasToken: !!u.derivTokenEncrypted,
+      maskedToken: u.derivTokenEncrypted ? "••••" + u.derivTokenEncrypted.slice(-6) : null,
+    }));
+    res.json({ tokens });
+  } catch (err) {
+    logger.error({ err }, "Tokens overview error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Revoke token
+router.delete("/users/:userId/token", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    await db.update(usersTable).set({ derivTokenEncrypted: null }).where(eq(usersTable.id, userId));
+    await db.insert(auditLogTable).values({
+      id: randomUUID(), adminUserId: req.user!.userId, action: "revoke_token",
+      targetUserId: userId, details: "Deriv token revoked", createdAt: Math.floor(Date.now() / 1000),
+    });
+    res.json({ message: "Token revoked" });
+  } catch (err) {
+    logger.error({ err }, "Revoke token error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Set token for user
+router.patch("/users/:userId/token", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { token } = req.body;
+    if (!token) { res.status(400).json({ error: "Token required" }); return; }
+    const encrypted = encrypt(token);
+    await db.update(usersTable).set({ derivTokenEncrypted: encrypted }).where(eq(usersTable.id, userId));
+    await db.insert(auditLogTable).values({
+      id: randomUUID(), adminUserId: req.user!.userId, action: "set_token",
+      targetUserId: userId, details: "Deriv token set by admin", createdAt: Math.floor(Date.now() / 1000),
+    });
+    res.json({ message: "Token set" });
+  } catch (err) {
+    logger.error({ err }, "Set token error");
     res.status(500).json({ error: "Server error" });
   }
 });
