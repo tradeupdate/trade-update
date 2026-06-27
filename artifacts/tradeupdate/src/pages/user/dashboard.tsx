@@ -131,25 +131,6 @@ export default function Dashboard() {
     }
   };
 
-  // Populate settings form from dashboard data
-  useEffect(() => {
-    if (dashboardData?.user) {
-      const u = dashboardData.user as any;
-      if (u.stakeSize != null && stakeInput === "") setStakeInput(String(u.stakeSize));
-      if (u.maxDailyLoss != null && maxLossInput === "") setMaxLossInput(String(u.maxDailyLoss));
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboardData?.user]);
-
-  // Fetch activity log history when activity tab opens
-  useEffect(() => {
-    if (activeTab !== "activity" || activityLoaded) return;
-    fetch("/api/user/activity-log?limit=100", { credentials: "include" })
-      .then(r => r.json())
-      .then(d => { setActivityHistory(d.logs || []); setActivityLoaded(true); })
-      .catch(() => {});
-  }, [activeTab, activityLoaded]);
-
   const handleSaveSettings = async () => {
     const body: Record<string, number> = {};
     if (stakeInput) body.stakeSize = parseFloat(stakeInput);
@@ -204,6 +185,24 @@ export default function Dashboard() {
       refetchInterval: 15000,
     }
   });
+
+  // Populate bot settings form from fetched user data (runs after dashboardData is defined)
+  useEffect(() => {
+    if (!dashboardData?.user) return;
+    const u = dashboardData.user as any;
+    if (u.stakeSize != null && stakeInput === "") setStakeInput(String(u.stakeSize));
+    if (u.maxDailyLoss != null && maxLossInput === "") setMaxLossInput(String(u.maxDailyLoss));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardData?.user]);
+
+  // Fetch activity log history when activity tab opens
+  useEffect(() => {
+    if (activeTab !== "activity" || activityLoaded) return;
+    fetch("/api/user/activity-log?limit=100", { credentials: "include" })
+      .then(r => r.json())
+      .then(d => { setActivityHistory(d.logs || []); setActivityLoaded(true); })
+      .catch(() => {});
+  }, [activeTab, activityLoaded]);
 
   const { data: candles, isLoading: candlesLoading } = useGetCandles(
     { timeframe, count: 200 },
