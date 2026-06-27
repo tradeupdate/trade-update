@@ -1,0 +1,967 @@
+Fix every broken feature listed below precisely.
+Do not rebuild anything that works.
+Do not change any styling or layouts.
+Only fix what is broken. Work through each 
+section completely before moving to the next.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — LANDING PAGE (BUILD COMPLETELY)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The landing page exists but has no real content.
+Build it completely with all sections below.
+
+NAVIGATION BAR:
+- Left: "TU" logo in teal circle + "TradeUpdate" 
+  bold white text
+- Right: "Login" button (outlined teal) → /login
+         "Request Access" button (filled teal) → /signup
+- Sticky on scroll
+- Mobile: hamburger menu collapses to dropdown
+- Background: #080A0F with bottom border #1C1F2E
+
+HERO SECTION:
+Headline: "Trade Smarter, Not Harder"
+Sub-headline: 
+"Institutional-grade Volatility 75 algorithmic 
+trading. AI-powered scoring. Smart risk management.
+Available 24/7."
+Two CTA buttons:
+- "Request Access" → /signup (teal filled, large)
+- "See How It Works" → scrolls to how-it-works 
+  section (ghost outlined)
+Background effect:
+- Dark #080A0F base
+- Subtle animated teal gradient glow 
+  bottom-left corner (CSS animation, no library)
+- Floating number ticker showing fake live price:
+  "R_75  39,247.85 ↑" updating every 3 seconds
+  with random small price movements
+  (purely visual demo, not real data)
+
+STATS BAR (below hero, dark card strip):
+Show these exact placeholder statistics:
+4 stats in a horizontal row:
+"2,847+" — Total Trades Executed
+"68.4%" — Average Win Rate  
+"3" — Active Strategies
+"99.8%" — System Uptime
+Each stat: large bold teal number, 
+small grey label below
+Animated count-up effect when scrolled into view
+Separator lines between each stat
+
+HOW IT WORKS SECTION:
+Title: "How It Works"
+Subtitle: "Get started in three simple steps"
+3 step cards in a row (stack on mobile):
+
+Step 1:
+Number: "01" in teal
+Icon: Shield icon
+Title: "Request Access"
+Body: "Apply for access and get approved 
+by our team within 24 hours. 
+Access is by invitation and approval only."
+
+Step 2:
+Number: "02" in teal
+Icon: Link icon
+Title: "Connect & Configure"
+Body: "Connect your Deriv account securely 
+or start immediately with Paper Trading. 
+Choose your risk profile — Safe, Pro, or Aggressive."
+
+Step 3:
+Number: "03" in teal
+Icon: Bot/cpu icon
+Title: "Let TradeUpdate Trade"
+Body: "Our 7-layer AI scoring engine monitors V75 
+24/7, scores every setup out of 50, and only 
+executes trades when conditions are near-perfect."
+
+FEATURES SECTION:
+Title: "Everything You Need"
+Subtitle: "Built for serious V75 traders"
+6 feature cards in a 3×2 grid (2×3 on mobile):
+
+Card 1: 🧠 "7-Layer AI Scoring"
+"Every trade scored across trend, volatility, 
+entry timing, pullback quality, and risk 
+alignment before execution."
+
+Card 2: 🛡️ "Smart Risk Management"
+"Automatic stop loss placement, break-even 
+moves, partial profit taking at 1.5R, 
+and trailing stops to maximize winners."
+
+Card 3: 📊 "3 Trading Strategies"
+"V75 Sniper for scalping, V75 Swing for 
+larger moves, and V75 Reversal for 
+counter-trend entries at extremes."
+
+Card 4: 🔄 "Auto-Compound"
+"Automatically adjusts stake size as your 
+balance grows so your profits compound 
+without any manual intervention."
+
+Card 5: 📱 "Mobile First"
+"Full-featured dashboard on any device. 
+Real-time push notifications for every 
+trade event so you're always informed."
+
+Card 6: 🛡️ "Recovery Mode"
+"Automatically switches to ultra-conservative 
+settings when drawdown reaches 15%, 
+protecting your account during losing streaks."
+
+Each card: dark card bg, teal icon, white title,
+grey body text, subtle teal border on hover
+
+TESTIMONIALS SECTION:
+Title: "What Traders Say"
+3 testimonial cards:
+
+Card 1:
+"TradeUpdate completely changed how I approach 
+V75. The risk management alone saved my 
+account from a major drawdown twice."
+— Sarah K. 🇬🇧 | Pro Profile | 3 months
+
+Card 2:
+"I was skeptical but the AI scoring is 
+genuinely impressive. Achieved a 71% win 
+rate in my first month of live trading."
+— Michael T. 🇿🇦 | Safe Profile | 5 months
+
+Card 3:
+"The recovery mode feature is brilliant. 
+It detected my losing streak early and 
+switched to conservative mode automatically."
+— James O. 🇳🇬 | Aggressive Profile | 2 months
+
+Each card: dark card, grey quote text,
+teal quotation mark icon top left,
+name + flag + profile + duration bottom
+
+FAQ SECTION:
+Title: "Frequently Asked Questions"
+Accordion style (tap to expand/collapse):
+
+Q1: "Is my money safe?"
+A: "Your funds remain in your own Deriv account 
+at all times. TradeUpdate never holds or accesses 
+your capital directly. We only trade on your 
+behalf through your personal API token, which 
+you can revoke at any time from your Deriv account."
+
+Q2: "What is the Volatility 75 Index?"
+A: "The Volatility 75 Index (V75) is a synthetic 
+index available exclusively on the Deriv platform. 
+It simulates a market with 75% volatility, 
+trading 24/7 with no news events, economic data, 
+or market closures — making it ideal for 
+consistent algorithmic trading."
+
+Q3: "Do I need trading experience?"
+A: "No prior trading experience is required. 
+TradeUpdate handles all market analysis and 
+trade execution automatically. You simply 
+choose a risk profile that matches your 
+account size and risk tolerance."
+
+Q4: "How much do I need to start?"
+A: "You can start Paper Trading immediately 
+with no real money at all. For live trading, 
+the Safe profile requires a minimum $100 
+Deriv account balance. Pro and Aggressive 
+profiles have higher minimums set by our team."
+
+Q5: "Can I stop the bot anytime?"
+A: "Yes, completely. You have full control 
+with a bot toggle to pause anytime, and 
+an emergency Kill Switch that stops all 
+activity instantly. You are always in control."
+
+FINAL CTA SECTION:
+Dark card with teal glow background
+Title: "Ready to Trade Smarter?"
+Subtitle: "Join traders already using TradeUpdate 
+to trade V75 algorithmically with institutional 
+precision."
+Button: "Request Access Now" → /signup (large teal)
+Small text below: "Access by approval only. 
+Applications reviewed within 24 hours."
+
+FOOTER:
+Dark background #080A0F
+Top border #1C1F2E
+Left: "TU" logo + "TradeUpdate" + tagline
+Center: Navigation links
+  Home | How It Works | Features | FAQ | Login
+Right: "© 2025 TradeUpdate. All rights reserved."
+Bottom: Small grey text
+"Trading involves substantial risk of loss. 
+Past performance does not guarantee future results. 
+Only trade with capital you can afford to lose."
+
+MOBILE RESPONSIVE:
+All sections stack vertically on mobile
+3-column grids become 1 column
+Stats bar becomes 2×2 grid
+Navigation collapses to hamburger menu
+Buttons full width on mobile
+Font sizes scale down proportionally
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — FIX: ADMIN LOGIN BUTTON MISSING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The admin dashboard has no logout button visible.
+
+Fix:
+1. In the admin dashboard header/navbar:
+   Add username display: "Admin: [username]"
+   Add "Logout" button (outlined red or grey)
+   Position: top right of admin header
+
+2. Logout button onClick:
+   Call POST /api/auth/logout
+   Clear all state
+   navigate('/login', { replace: true })
+   window.location.reload()
+
+3. Also add logout to admin mobile menu
+   if admin panel has a sidebar or bottom nav
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — FIX: ADMIN CREATE USER BUTTON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Clicking "Create User" does nothing.
+
+Root cause: Modal is not opening OR
+the onClick handler is not connected.
+
+Fix completely:
+
+1. Find the Create User button in admin users tab.
+   Add explicit onClick handler:
+   onClick={() => setCreateUserModalOpen(true)}
+
+2. Create the modal component if it doesn't exist:
+   Full screen on mobile, centered on desktop
+   
+   FORM FIELDS:
+   - Username (text input, required)
+   - Email (email input, required)
+   - Country (select dropdown, required)
+   - Password field with "Auto-generate" button
+     Auto-generate creates: "Trade" + 4 random digits + "!"
+     Example: Trade4821!
+     Shows generated password in the field
+   - Trading Profile (radio cards: Safe/Pro/Aggressive)
+   - Active toggle (default ON)
+   
+   BUTTONS:
+   - "Create User" (teal, submit)
+   - "Cancel" (grey, closes modal)
+
+3. On form submit:
+   Validate all required fields
+   If any empty: show inline error below field
+   
+   Call POST /api/admin/users/create with:
+   { username, email, country, password, 
+     profile, isActive }
+   
+4. Backend POST /api/admin/users/create:
+   Validate username is unique (check users table)
+   Validate email is unique
+   Hash password with bcrypt
+   Insert into users table:
+     id: crypto.randomUUID()
+     username, email, country
+     password_hash: hashed
+     role: 'user'
+     status: 'approved'
+     is_active: isActive ? 1 : 0
+     trading_profile: profile
+     account_balance: 0
+     peak_balance: 0
+     force_password_change: 1
+     created_at: Date.now()
+   Return: { success: true, user: { 
+     username, email, tempPassword: password }}
+
+5. On success response:
+   Close the form section of modal
+   Show SUCCESS STATE in modal:
+   Green checkmark icon
+   "User Created Successfully"
+   Copyable credentials box:
+     Username: [username]
+     Password: [tempPassword]
+     Profile: [profile]
+   "Copy Credentials" button (copies both to clipboard)
+   "Close" button
+   
+6. Refresh users list after closing modal
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — FIX: ADMIN STRATEGY TAB
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"Create Strategy" does nothing.
+"Configure existing strategy" does nothing.
+Strategy win rate shows fake data.
+
+FIX 1 — Create Strategy button:
+
+1. Find Create Strategy button
+   Add onClick={() => setCreateStrategyModalOpen(true)}
+
+2. Create the strategy builder modal:
+   
+   MULTI-STEP FORM (show step X of 7 at top):
+   
+   STEP 1 — Basic Info:
+   - Strategy Name (text, required)
+   - Description (textarea)
+   - Type selector (4 cards):
+     Scalping | Swing | Reversal | Trend-Following
+   
+   STEP 2 — Timeframes:
+   - Entry timeframe (select: 1m/5m/15m)
+   - Signal timeframe (select: 1m/5m/15m)
+   - Trend timeframe (select: 5m/15m/1h)
+   
+   STEP 3 — Sessions:
+   4 toggle cards:
+   - Asian/Tokyo 00:00-03:00 UTC (MODERATE)
+   - London Open 07:00-10:00 UTC (HIGH)
+   - London/NY Overlap 12:00-15:00 UTC (PREMIUM)
+   - NY Afternoon 13:00-16:00 UTC (HIGH)
+   Each card shows quality badge
+   
+   STEP 4 — Scoring & Limits:
+   - Score threshold slider (0-50, default 35)
+   - Max trades per day (number input)
+   - Max trades per hour (number input)
+   - Auto-pause after X consecutive losses (number)
+   
+   STEP 5 — Risk:
+   - Max risk per trade % (slider 0.5-2.0)
+   - Stop multiplier (1.0-2.0×)
+   - TP1 multiplier (1.0-2.5×)
+   - TP2 multiplier (2.0-4.0×)
+   
+   STEP 6 — Advanced Features:
+   Toggle switches with descriptions:
+   - Counter-trend entries
+     "Allow trades against the main trend 
+      at RSI extremes (requires RSI>78 or <22)"
+   - Consolidation detection
+     "Detect range-bound markets and wait 
+      for breakout instead of trend entry"
+   - First candle rule
+     "Wait for first full 15m candle after 
+      session opens before evaluating"
+   - Spike filter
+     "Pause trading when abnormal candle 
+      detected (range > 3× ATR)"
+   - Momentum extension
+     "Allow winning trades to run past TP2 
+      when momentum conditions are met"
+   
+   STEP 7 — Review:
+   Show all selected settings in plain English:
+   "This strategy will:
+   • Trade on 1m entry, 5m signal, 15m trend
+   • Only trade during London Open + NY Overlap
+   • Require score of 35/50 minimum
+   • Risk 1.5% per trade
+   • Auto-pause after 5 consecutive losses
+   • Spike filter: ON
+   • Counter-trend: OFF"
+   
+   "Create Strategy" button at bottom
+   
+3. STEP NAVIGATION:
+   "Next →" and "← Back" buttons between steps
+   Progress bar at top showing current step
+   Cannot go to next step if required fields empty
+   
+4. On final Create Strategy submit:
+   POST /api/admin/strategies/create
+   Body: all strategy fields
+   
+5. Backend saves to strategies table:
+   id: crypto.randomUUID()
+   All form fields mapped to columns
+   status: 'active'
+   created_at: Date.now()
+   created_by: admin username
+   Return: { success: true, strategy }
+   
+6. On success:
+   Close modal
+   Show toast: "Strategy created successfully"
+   Add new strategy to list without page refresh
+
+FIX 2 — Configure Existing Strategy:
+
+1. Find the configure/edit button on each strategy card
+   Add onClick={() => openEditStrategy(strategy)}
+
+2. Open same multi-step form modal
+   Pre-fill ALL fields with existing strategy values
+   Change title to "Edit Strategy: [name]"
+   Change final button to "Save Changes"
+
+3. On save: PATCH /api/admin/strategies/:id
+   Body: updated fields
+   Backend updates strategies table
+   Return: { success: true, strategy }
+
+4. On success:
+   Close modal
+   Update strategy in list
+   Show toast: "Strategy updated"
+
+FIX 3 — Strategy Win Rate (Real Data):
+
+1. Strategy win rate must come from real data.
+   Priority order:
+   A. If trades exist for this strategy:
+      Calculate from trades table:
+      SELECT COUNT(*) as total,
+      SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+      FROM trades WHERE strategy_id = ?
+      win_rate = (wins / total) * 100
+   
+   B. If no live trades but backtest exists:
+      Read from backtest_results table
+      Use most recent backtest win_rate
+      Show label: "Backtest result"
+   
+   C. If neither exists:
+      Show "—" with label "No data yet"
+      NOT fake numbers
+
+2. Update the strategy card display:
+   If real trades: "Win Rate: 68.4% (47 trades)"
+   If backtest only: "Win Rate: 71.2% (backtest)"
+   If no data: "Win Rate: — (no trades yet)"
+
+3. Also show on strategy detail:
+   Total trades: X
+   Wins: X | Losses: X
+   Avg score at entry: X/50
+   Best session: London/NY Overlap
+   All calculated from real trades table data
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — FIX: USER DASHBOARD CHART
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Chart is completely blank. AI signal analysis 
+works (scores show) but chart doesn't render.
+
+This means candle data exists but 
+lightweight-charts is not rendering it.
+
+Fix completely:
+
+1. First check: is lightweight-charts installed?
+   Run: npm list lightweight-charts
+   If not installed: npm install lightweight-charts
+   Import correctly:
+   import { createChart } from 'lightweight-charts'
+
+2. Chart initialization:
+   Create a div ref: const chartContainerRef = useRef(null)
+   
+   In useEffect (runs after component mounts):
+   if (!chartContainerRef.current) return
+   
+   const chart = createChart(chartContainerRef.current, {
+     width: chartContainerRef.current.clientWidth,
+     height: 400,
+     layout: {
+       background: { color: '#080A0F' },
+       textColor: '#8890AA',
+     },
+     grid: {
+       vertLines: { color: '#1C1F2E' },
+       horzLines: { color: '#1C1F2E' },
+     },
+     crosshair: { mode: 1 },
+     rightPriceScale: {
+       borderColor: '#1C1F2E',
+     },
+     timeScale: {
+       borderColor: '#1C1F2E',
+       timeVisible: true,
+     },
+   })
+   
+   const candleSeries = chart.addCandlestickSeries({
+     upColor: '#00D4A4',
+     downColor: '#FF4060',
+     borderUpColor: '#00D4A4',
+     borderDownColor: '#FF4060',
+     wickUpColor: '#00D4A4',
+     wickDownColor: '#FF4060',
+   })
+   
+   Store chart and candleSeries in refs:
+   chartRef.current = chart
+   candleSeriesRef.current = candleSeries
+   
+   Return cleanup: chart.remove()
+
+3. Fetch candle data:
+   GET /api/user/chart/candles?timeframe=5m
+   
+   Backend must return array of:
+   { time: unix_timestamp_seconds (NOT ms),
+     open: number,
+     high: number,
+     low: number,
+     close: number }
+   
+   IMPORTANT: lightweight-charts requires time 
+   in SECONDS not milliseconds.
+   If storing ms in DB: divide by 1000 before sending.
+   
+   Sort candles by time ascending before sending.
+   Remove any duplicate timestamps.
+
+4. Set candle data on series:
+   candleSeries.setData(candles)
+   chart.timeScale().fitContent()
+
+5. Real-time updates from SSE tick:
+   On each tick event:
+   const currentTime = Math.floor(Date.now() / 1000)
+   const minuteTime = currentTime - (currentTime % 60)
+   
+   candleSeriesRef.current.update({
+     time: minuteTime,
+     open: currentCandle.open || price,
+     high: Math.max(currentCandle.high || price, price),
+     low: Math.min(currentCandle.low || price, price),
+     close: price
+   })
+
+6. Timeframe switching (1m/5m/15m pills):
+   On click: fetch new candles for that timeframe
+   Clear existing candle data
+   Set new candle data
+   Recalculate and redraw BB + EMA overlays
+
+7. Bollinger Bands overlay:
+   Calculate from candle close array
+   
+   function calculateBB(candles, period=20, stdDev=2):
+     for each candle from period onwards:
+       slice = last period closes
+       sma = average of slice
+       std = standard deviation of slice
+       upper = sma + (stdDev * std)
+       lower = sma - (stdDev * std)
+       return array of {time, upper, middle, lower}
+   
+   Add 3 line series:
+   const bbUpper = chart.addLineSeries({
+     color: 'rgba(255,255,255,0.3)',
+     lineWidth: 1,
+     lineStyle: 0 })
+   const bbMiddle = chart.addLineSeries({
+     color: 'rgba(255,255,255,0.2)',
+     lineWidth: 1,
+     lineStyle: 1 }) // dashed
+   const bbLower = chart.addLineSeries({
+     color: 'rgba(255,255,255,0.3)',
+     lineWidth: 1,
+     lineStyle: 0 })
+   
+   bbUpper.setData(bbData.map(d => ({time:d.time, value:d.upper})))
+   bbMiddle.setData(bbData.map(d => ({time:d.time, value:d.middle})))
+   bbLower.setData(bbData.map(d => ({time:d.time, value:d.lower})))
+
+8. EMA overlays:
+   function calculateEMA(candles, period):
+     k = 2 / (period + 1)
+     ema = candles[0].close
+     result = []
+     candles.forEach((c, i) => {
+       if (i === 0) { ema = c.close }
+       else { ema = c.close * k + ema * (1-k) }
+       if (i >= period - 1) {
+         result.push({ time: c.time, value: ema })
+       }
+     })
+     return result
+   
+   Add line series for EMA9 (teal), 
+   EMA21 (gold #FFB347), EMA50 (purple, 15m only)
+
+9. Handle container resize:
+   window.addEventListener('resize', () => {
+     chart.applyOptions({ 
+       width: chartContainerRef.current.clientWidth 
+     })
+   })
+
+10. The chart div must have explicit height:
+    <div ref={chartContainerRef} 
+         style={{ height: '400px', width: '100%' }} />
+    Without explicit height, chart renders 0px tall.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — FIX: USER DEMO/LIVE TOGGLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Demo/Live toggle in settings does nothing.
+
+Fix completely:
+
+1. Find the Demo/Live account type toggle 
+   in the settings tab.
+
+2. When user clicks "Demo":
+   If current mode is already Demo: do nothing
+   
+   Call PATCH /api/user/settings/account-type
+   Body: { accountType: 'demo' }
+   
+   Backend:
+   Update user record: account_type = 'demo'
+   If user has Deriv token:
+     Disconnect current WebSocket
+     Reconnect with demo account flag
+   Return { success: true, accountType: 'demo' }
+   
+   On success: 
+   Show toast "Switched to Demo account"
+   Update toggle visual state
+
+3. When user clicks "Live":
+   Show confirmation modal FIRST:
+   Title: "Switch to Live Trading"
+   Body: "You are switching to real money trading. 
+   All trades will use real funds from your 
+   Deriv live account. Are you sure?"
+   Buttons: "Yes, Switch to Live" (red) | "Cancel"
+   
+   On confirm:
+   Call PATCH /api/user/settings/account-type
+   Body: { accountType: 'live' }
+   Show toast "Switched to Live account"
+   Update visual state
+
+4. When "Paper Trading" mode selected:
+   Call PATCH /api/user/settings/trading-mode
+   Body: { mode: 'paper' }
+   Backend: update user trading_mode = 'paper'
+   Show: "Paper Trading mode active — 
+   No API token required"
+   Grey out the API token field
+   
+5. Visual state must reflect current mode:
+   Selected card: teal border + teal dot
+   Unselected: grey border
+   This state must persist after page refresh
+   Load current mode from user data on mount
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — FIX: BOT TOGGLE ACTUALLY TRADES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Bot toggle moves visually but bot doesn't trade.
+
+Fix completely:
+
+1. Bot toggle onClick:
+   Call POST /api/user/bot/toggle
+   Body: { enabled: true/false }
+   
+2. Backend POST /api/user/bot/toggle:
+   Get or create BotEngine instance for this user
+   If enabled=true:
+     botEngine.start()
+     This MUST actually start the evaluation loop
+   If enabled=false:
+     botEngine.pause()
+   Update bot state
+   Return { success: true, status: 'active'|'paused' }
+
+3. BotEngine.start() must:
+   Set isRunning = true
+   Clear any existing interval
+   Start WebSocket connection for this user
+   Begin receiving ticks and candles
+   
+   Start evaluation interval:
+   evaluationInterval = setInterval(() => {
+     runEvaluation()
+   }, 60000) // Every 60 seconds backup
+   
+   Also trigger on every new 5m candle:
+   derivService.on('newCandle5m', () => {
+     if (isRunning) runEvaluation()
+   })
+
+4. runEvaluation() must actually:
+   Run through ALL checks in Section 3 of 
+   the previous prompt (master stop, kill switch,
+   sessions, cooldown, etc.)
+   
+   Then call scoringEngine.evaluate(candles)
+   
+   If score >= threshold AND valid signal:
+     Execute paper trade
+     Insert into trades table
+     Update user balance
+     Broadcast via SSE
+
+5. After bot is enabled and running:
+   SSE must broadcast bot status every 5 seconds
+   User sees status change from PAUSED to ACTIVE
+   When evaluation runs: score panel updates
+   When trade executes: open trade panel appears
+
+6. For Clean10test account specifically:
+   Paper mode is on
+   Safe profile (threshold 38/50)
+   V75 Sniper strategy
+   When bot is ON and score reaches 38/50:
+   A paper trade MUST open automatically
+   Verify this works end to end
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — FIX: ADMIN APPROVE/REJECT SIGNUPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Ensure approve and reject buttons work:
+
+1. GET /api/admin/signups
+   Returns all records from pending_signups table
+   where status = 'pending'
+   Display in admin users tab under 
+   "Pending Approvals" sub-tab
+
+2. Approve button onClick for each signup:
+   Call POST /api/admin/signups/approve/:id
+   
+   Backend:
+   Get signup from pending_signups
+   Create user in users table:
+     username, email, country from signup
+     password_hash from signup
+     status = 'approved'
+     is_active = 1
+     trading_profile = 'safe'
+     force_password_change = 1
+     created_at = Date.now()
+   Update pending_signups status = 'approved'
+   Send approval email (or log if no SMTP)
+   Return { success: true }
+   
+   Frontend: remove from pending list
+   Show toast: "User approved and notified"
+
+3. Reject button onClick:
+   Show confirmation: "Reject [username]'s application?"
+   On confirm: POST /api/admin/signups/reject/:id
+   Backend: update status = 'rejected'
+   Send rejection email
+   Remove from list
+   Show toast: "Application rejected"
+
+4. Pending count badge:
+   Show count on "Pending" tab label
+   Updates when approved/rejected
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — FIX: REMAINING BROKEN BUTTONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Fix every other button that does nothing:
+
+ADMIN — ASSIGN STRATEGY TO USER:
+Find assign/strategy dropdown on user cards
+On change: PATCH /api/admin/users/:id
+Body: { strategyId: selectedId }
+Backend: UPDATE users SET strategy_id = ?
+Show toast: "Strategy assigned"
+
+ADMIN — ACTIVATE/DEACTIVATE USER:
+Toggle button on user card
+PATCH /api/admin/users/:id
+Body: { isActive: true/false }
+Backend: UPDATE users SET is_active = ?
+If deactivating: stop their bot engine
+Show toast: "User activated/deactivated"
+
+ADMIN — PAUSE/REACTIVATE STRATEGY:
+Pause button on strategy card
+POST /api/admin/strategies/:id/pause
+Backend: SET circuit_breaker_active = 1
+Stop all bots using this strategy
+Show toast: "Strategy paused — all users affected"
+
+Reactivate button:
+POST /api/admin/strategies/:id/reactivate
+Backend: SET circuit_breaker_active = 0
+Show toast: "Strategy reactivated"
+
+ADMIN — MASTER BOT STOP:
+Large toggle in admin settings tab
+POST /api/admin/settings/master-stop
+Body: { stopped: true/false }
+Backend: UPDATE system_settings 
+  SET value = 'true'/'false' 
+  WHERE key = 'master_stop'
+Immediately pause ALL running bot engines
+Broadcast SSE maintenance event to all users
+Show maintenance banner on all user dashboards
+
+USER — KILL SWITCH:
+Hold 1.5 seconds to activate (show progress ring)
+POST /api/user/bot/kill
+Backend: set killSwitchActive = true
+Stop bot, close any open trade
+SSE broadcasts stopped status immediately
+Dashboard shows "KILL SWITCH ACTIVE" banner
+
+USER — RESET KILL SWITCH:
+Show only when kill switch is active
+Button: "Reset Kill Switch"
+onClick: show confirmation modal
+On confirm: POST /api/user/bot/reset-kill
+Backend: set killSwitchActive = false
+          set isRunning = false
+SSE broadcasts paused status
+User must manually re-enable bot
+
+USER — RESUME AFTER LOSSES:
+Show "Resume Trading" button only when
+pauseReason contains "consecutive losses"
+onClick: show warning modal:
+"You've hit [X] consecutive losses.
+Review your recent trades before resuming.
+[View Trades] [Resume]"
+On resume: POST /api/user/bot/resume
+Backend: reset consecutiveLosses = 0
+          set isRunning = true
+Bot restarts evaluation loop
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — CANDLE DATA BACKEND FIX
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Chart is blank because candle data may not 
+be stored or returned correctly.
+
+Fix completely:
+
+1. Verify Deriv WebSocket is receiving candles:
+   Add console.log on every candle received:
+   console.log('Candle received:', candle)
+   Confirm candles are arriving with correct data
+
+2. Store received candles in memory (per user):
+   candles1m: array of last 200 candles
+   candles5m: built from grouping 1m candles
+   candles15m: built from grouping 1m candles
+   
+   Each candle object:
+   { time: seconds (not ms), 
+     open, high, low, close, volume }
+
+3. GET /api/user/chart/candles?timeframe=5m
+   Must return candles from the in-memory store
+   Sort by time ascending
+   Remove duplicates (same timestamp)
+   Convert time to seconds if stored as ms
+   Return: { candles: [...], timeframe: '5m' }
+
+4. If in-memory store is empty (server just started):
+   Fetch history from Deriv:
+   { "ticks_history": "R_75",
+     "style": "candles",
+     "granularity": 300,
+     "count": 200,
+     "end": "latest" }
+   Store response candles in memory
+   Return to frontend
+
+5. Test by hitting the endpoint directly:
+   GET /api/user/chart/candles?timeframe=5m
+   Verify it returns 100+ candles
+   Verify time values are unix seconds
+   Verify prices are in 38,000-42,000 range
+   If any of these fail: fix before frontend
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 11 — END TO END VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After all fixes, verify every item below works.
+Do NOT mark complete until every item passes.
+
+LANDING PAGE:
+☐ Page loads at /
+☐ Navigation has Login + Request Access buttons
+☐ Hero headline visible
+☐ Fake price ticker animates
+☐ Stats bar shows 4 statistics
+☐ How It Works shows 3 steps
+☐ Features shows 6 cards
+☐ Testimonials shows 3 cards
+☐ FAQ accordion opens/closes
+☐ Final CTA button goes to /signup
+☐ Footer visible
+☐ Mobile: no horizontal scroll
+
+ADMIN:
+☐ Logout button visible and works
+☐ Create User opens modal with all fields
+☐ Create User submits and shows credentials
+☐ Pending signups list shows
+☐ Approve signup creates user + toast
+☐ Reject signup works + toast
+☐ Create Strategy opens 7-step form
+☐ All 7 steps navigate correctly
+☐ Create Strategy saves and appears in list
+☐ Configure strategy opens pre-filled form
+☐ Save strategy updates correctly
+☐ Strategy win rate shows real data or "—"
+☐ Master stop toggle pauses all bots
+☐ Assign strategy to user works
+
+USER DASHBOARD:
+☐ Price in header updates every second
+☐ Price is in 38,000-42,000 range
+☐ Chart renders candles (not blank)
+☐ Bollinger Bands visible on chart
+☐ EMA9 and EMA21 lines visible
+☐ Timeframe switching works (1m/5m/15m)
+☐ Score panel shows real scores (not 0.0)
+☐ Bot toggle turns bot on
+☐ When bot on: evaluation loop runs
+☐ When score >= threshold: paper trade opens
+☐ Open trade shows on home tab with live P&L
+☐ Trade closes at stop/TP and updates balance
+☐ Trade appears in trades tab after close
+☐ Kill switch hold-to-activate works
+☐ Reset kill switch works
+☐ Demo/Live toggle works with confirmation
+☐ Paper trading mode toggle works
+☐ Session cards show correct times
+
+Do not report complete until every 
+checkbox above passes.
