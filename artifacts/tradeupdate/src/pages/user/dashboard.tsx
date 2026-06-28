@@ -32,9 +32,10 @@ import { useSSE } from "@/hooks/use-sse";
 type Timeframe = "1m" | "5m" | "15m";
 type TradeFilter = "all" | "win" | "loss" | "paper" | "copy";
 
-function ScoreBar({ label, value, max = 10 }: { label: string; value: number; max?: number }) {
-  const pct = Math.min(100, (value / max) * 100);
-  const color = pct >= 66 ? "#00D4A4" : pct >= 33 ? "#FFB347" : "#FF4060";
+function ScoreBar({ label, value, min = 0, max = 10 }: { label: string; value: number; min?: number; max?: number }) {
+  const range = max - min;
+  const pct = range > 0 ? Math.min(100, Math.max(0, ((value - min) / range) * 100)) : 0;
+  const color = value < 0 ? "#FF4060" : pct >= 66 ? "#00D4A4" : pct >= 33 ? "#FFB347" : "#FF4060";
   return (
     <div className="flex items-center gap-2">
       <span className="text-xs text-text-secondary w-16 shrink-0">{label}</span>
@@ -441,20 +442,18 @@ export default function Dashboard() {
                 <div className="flex items-center gap-2 mb-2">
                   <Brain className="w-4 h-4 text-primary" />
                   <span className="text-sm font-medium">AI Score Breakdown</span>
-                  <span className="ml-auto font-bold tabular-nums text-primary">{selectedTrade.scoreTotal?.toFixed(1)}/50</span>
+                  <span className="ml-auto font-bold tabular-nums text-primary">{selectedTrade.scoreTotal?.toFixed(1)}/25</span>
                 </div>
                 <div className="h-1.5 bg-border rounded-full overflow-hidden mb-3">
-                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, (selectedTrade.scoreTotal / 50) * 100)}%` }} />
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, (selectedTrade.scoreTotal / 25) * 100)}%` }} />
                 </div>
                 <div className="space-y-2">
                   {[
-                    { label: "Trend", value: selectedTrade.scoreTrend, max: 12 },
-                    { label: "Volatility", value: selectedTrade.scoreVolatility, max: 10 },
-                    { label: "Timing", value: selectedTrade.scoreTiming, max: 10 },
-                    { label: "Pullback", value: selectedTrade.scorePullback, max: 10 },
-                    { label: "Risk", value: selectedTrade.scoreRisk, max: 10 },
-                  ].map(({ label, value, max }) => value != null && (
-                    <ScoreBar key={label} label={label} value={value} max={max} />
+                    { label: "1h Trend", value: selectedTrade.scoreTrend, min: 0, max: 10 },
+                    { label: "15m Conf", value: selectedTrade.scoreVolatility, min: -2, max: 5 },
+                    { label: "5m Entry", value: selectedTrade.scoreTiming, min: 0, max: 10 },
+                  ].map(({ label, value, min, max }) => value != null && (
+                    <ScoreBar key={label} label={label} value={value} min={min} max={max} />
                   ))}
                 </div>
               </div>
@@ -899,10 +898,10 @@ export default function Dashboard() {
               <Card className="bg-card border-border p-3 text-center">
                 <div className="text-xs text-text-secondary mb-1">AI Score</div>
                 <div className={`font-bold text-sm ${
-                  (sse.scores?.total ?? 0) >= 20 ? "text-primary" :
-                  (sse.scores?.total ?? 0) >= 15 ? "text-yellow-400" : "text-text-secondary"
+                  (sse.scores?.total ?? 0) >= 16 ? "text-primary" :
+                  (sse.scores?.total ?? 0) >= 10 ? "text-yellow-400" : "text-text-secondary"
                 }`}>
-                  {sse.scores?.loading ? "…" : sse.scores?.total != null ? `${sse.scores.total.toFixed(1)}/30` : "—"}
+                  {sse.scores?.loading ? "…" : sse.scores?.total != null ? `${sse.scores.total.toFixed(1)}/25` : "—"}
                 </div>
               </Card>
             </div>
@@ -928,7 +927,7 @@ export default function Dashboard() {
                 {/* Score bars — c1 (1h Trend) · c2 (15m Confirm) · c3 (5m Entry) */}
                 <div className="space-y-2 mb-4">
                   <ScoreBar label="1h Trend" value={sse.scores.c1 ?? 0} max={10} />
-                  <ScoreBar label="15m Conf" value={sse.scores.c2 ?? 0} max={10} />
+                  <ScoreBar label="15m Conf" value={sse.scores.c2 ?? 0} min={-2} max={5} />
                   <ScoreBar label="5m Entry" value={sse.scores.c3 ?? 0} max={10} />
                 </div>
 
@@ -936,23 +935,23 @@ export default function Dashboard() {
                 <div className="mb-4">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-text-secondary">Total Score</span>
-                    <span className={`font-bold font-mono ${(sse.scores.total ?? 0) >= 20 ? "text-primary" : "text-text-secondary"}`}>
-                      {(sse.scores.total ?? 0).toFixed(1)} / 30
+                    <span className={`font-bold font-mono ${(sse.scores.total ?? 0) >= 16 ? "text-primary" : "text-text-secondary"}`}>
+                      {(sse.scores.total ?? 0).toFixed(1)} / 25
                     </span>
                   </div>
                   <div className="h-2 bg-border rounded-full overflow-hidden">
                     <div
                       className="h-full rounded-full transition-all duration-500"
                       style={{
-                        width: `${Math.min(100, ((sse.scores.total ?? 0) / 30) * 100)}%`,
-                        backgroundColor: (sse.scores.total ?? 0) >= 20 ? "#00D4A4" : (sse.scores.total ?? 0) >= 15 ? "#FFB347" : "#FF4060"
+                        width: `${Math.min(100, ((sse.scores.total ?? 0) / 25) * 100)}%`,
+                        backgroundColor: (sse.scores.total ?? 0) >= 16 ? "#00D4A4" : (sse.scores.total ?? 0) >= 10 ? "#FFB347" : "#FF4060"
                       }}
                     />
                   </div>
                   <div className="flex justify-between text-[10px] text-text-secondary mt-1">
                     <span>0</span>
-                    <span className="text-primary">20 threshold</span>
-                    <span>30</span>
+                    <span className="text-primary">16 threshold</span>
+                    <span>25</span>
                   </div>
                 </div>
 

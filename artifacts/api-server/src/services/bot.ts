@@ -341,7 +341,7 @@ class BotManager {
 
     // Log signal
     const signalId = randomUUID();
-    const threshold = strategy.scoreThreshold || 38;
+    const threshold = strategy.scoreThreshold ?? 16;
     const action = result.total >= threshold && result.direction !== "NONE" ? "executed" : "rejected";
     const rejectionReason = action === "rejected"
       ? result.direction === "NONE" ? "No clear signal" : `Score ${result.total} < threshold ${threshold}`
