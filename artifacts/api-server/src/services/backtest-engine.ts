@@ -417,8 +417,9 @@ export async function runDeterministicBacktest(
   const MAX_HOLD_BARS = 6;
   // EXTENDED_HOLD_BARS: 45-min extended time stop = 9 × 5m bars (if in profit at 30min)
   const EXTENDED_HOLD_BARS = 9;
-  // Max stop-loss distance; reject if ATR × slMulti exceeds this
-  const MAX_STOP_DIST = 120;
+  // Max stop-loss distance as a fraction of price (2% of entry).
+  // A fixed pip cap is wrong for V75 which trades at 40,000–50,000 with ATR ~150.
+  const MAX_STOP_DIST_FRACTION = 0.02; // 2% of entry price
   // BE buffer: pips above/below entry when moving stop to break even
   const BUFFER_PIPS = 5;
   // Cooldown between trades: 5 minutes
@@ -474,7 +475,7 @@ export async function runDeterministicBacktest(
   if (raw5m.length > 0) {
     console.log(`Date range: ${new Date(raw5m[0]!.time * 1000).toISOString()} → ${new Date(raw5m[raw5m.length - 1]!.time * 1000).toISOString()}`);
   }
-  console.log(`Config: threshold=${scoreThreshold} risk=${maxRiskPercent}% slX=${slMulti} tp1X=${tp1Multi} tp2X=${tp2Multi} maxStop=${MAX_STOP_DIST} session=${sessionEnabled ? `${sessionStart}-${sessionEnd}UTC` : "off"}`);
+  console.log(`Config: threshold=${scoreThreshold} risk=${maxRiskPercent}% slX=${slMulti} tp1X=${tp1Multi} tp2X=${tp2Multi} maxStop=${(MAX_STOP_DIST_FRACTION*100).toFixed(0)}%price session=${sessionEnabled ? `${sessionStart}-${sessionEnd}UTC` : "off"}`);
 
   for (let i = WARMUP; i < raw5m.length; i++) {
     const candle = raw5m[i];
@@ -719,18 +720,19 @@ export async function runDeterministicBacktest(
     if (result.total < scoreThreshold) { scoreBelowThreshold++; continue; }
     if (result.direction === "NONE") { scoreDirectionNone++; continue; }
 
-    // FIX 4: Trend strength filter — last 3 closed 1h candles must have ≥2 aligned
+    // FIX 4: Trend strength filter — last 3 closed 1h candles must have ≥2 aligned.
+    // Penalty is −2 (same scale as C2 soft penalty) to avoid over-filtering.
     const last3h = all1h.filter(c => c.time < candle.time).slice(-3);
     if (last3h.length >= 3) {
       const alignedCount = result.direction === "BUY"
         ? last3h.filter(c => c.close > c.open).length
         : last3h.filter(c => c.close < c.open).length;
       if (alignedCount < 2) {
-        const adjustedScore = result.total - 3;
-        if (i % 200 === 0 || adjustedScore < scoreThreshold) {
-          console.log(`[BT] Trend filter: ${alignedCount}/3 1h candles aligned, score ${result.total}→${adjustedScore} dir=${result.direction}`);
+        const adjustedScore = result.total - 2;
+        if (adjustedScore < scoreThreshold) {
+          console.log(`[BT] Trend filter: ${alignedCount}/3 1h aligned, score ${result.total}→${adjustedScore} dir=${result.direction}`);
+          scoreBelowThreshold++; continue;
         }
-        if (adjustedScore < scoreThreshold) { scoreBelowThreshold++; continue; }
       }
     }
 
@@ -742,9 +744,10 @@ export async function runDeterministicBacktest(
     const tp1Dist = atrVal * tp1Multi;
     const tp2Dist = atrVal * tp2Multi;
 
-    // Reject if stop is too wide (volatile/choppy market)
-    if (slDist > MAX_STOP_DIST) {
-      console.log(`[BT] Rejected — stop too wide: slDist=${slDist.toFixed(2)} > ${MAX_STOP_DIST}`);
+    // Reject if stop is too wide relative to price (>2% = extreme volatility spike)
+    const maxStopAbs = candle.close * MAX_STOP_DIST_FRACTION;
+    if (slDist > maxStopAbs) {
+      if (i % 100 === 0) console.log(`[BT] Rejected — stop too wide: slDist=${slDist.toFixed(2)} > ${maxStopAbs.toFixed(2)} (2% of ${candle.close.toFixed(2)})`);
       continue;
     }
 
