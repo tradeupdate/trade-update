@@ -2015,12 +2015,16 @@ components:
           type: integer
         dateTo:
           type: integer
+        refreshData:
+          type: boolean
 
     BacktestResult:
       type: object
       required: [id, strategyId, totalTrades, wins, losses, winRate, profitFactor, maxDrawdown, totalPnl]
       properties:
         id:
+          type: string
+        runId:
           type: string
         strategyId:
           type: string
@@ -2066,6 +2070,14 @@ components:
           type: number
         sharpeRatio:
           type: number
+        candlesUsed:
+          type: integer
+        candleHash:
+          type: string
+        dataSource:
+          type: string
+        cacheFile:
+          type: string
         createdAt:
           type: integer
 

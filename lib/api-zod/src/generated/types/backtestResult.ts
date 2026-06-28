@@ -12,6 +12,7 @@ import type { SessionSummary } from './sessionSummary';
 
 export interface BacktestResult {
   id: string;
+  runId?: string;
   strategyId: string;
   runBy?: string;
   dateFrom?: number;
@@ -31,5 +32,9 @@ export interface BacktestResult {
   worstTrade?: number;
   avgDurationMinutes?: number;
   sharpeRatio?: number;
+  candlesUsed?: number;
+  candleHash?: string;
+  dataSource?: string;
+  cacheFile?: string;
   createdAt?: number;
 }

@@ -1283,11 +1283,13 @@ export const GetCopyTradeHistoryResponse = zod.object({
 export const RunBacktestBody = zod.object({
   "strategyId": zod.string(),
   "dateFrom": zod.number(),
-  "dateTo": zod.number()
+  "dateTo": zod.number(),
+  "refreshData": zod.boolean().optional()
 })
 
 export const RunBacktestResponse = zod.object({
   "id": zod.string(),
+  "runId": zod.string().optional(),
   "strategyId": zod.string(),
   "runBy": zod.string().optional(),
   "dateFrom": zod.number().optional(),
@@ -1328,6 +1330,10 @@ export const RunBacktestResponse = zod.object({
   "worstTrade": zod.number().optional(),
   "avgDurationMinutes": zod.number().optional(),
   "sharpeRatio": zod.number().optional(),
+  "candlesUsed": zod.number().optional(),
+  "candleHash": zod.string().optional(),
+  "dataSource": zod.string().optional(),
+  "cacheFile": zod.string().optional(),
   "createdAt": zod.number().optional()
 })
 
@@ -1338,6 +1344,7 @@ export const RunBacktestResponse = zod.object({
 export const GetBacktestResultsResponse = zod.object({
   "results": zod.array(zod.object({
   "id": zod.string(),
+  "runId": zod.string().optional(),
   "strategyId": zod.string(),
   "runBy": zod.string().optional(),
   "dateFrom": zod.number().optional(),
@@ -1378,6 +1385,10 @@ export const GetBacktestResultsResponse = zod.object({
   "worstTrade": zod.number().optional(),
   "avgDurationMinutes": zod.number().optional(),
   "sharpeRatio": zod.number().optional(),
+  "candlesUsed": zod.number().optional(),
+  "candleHash": zod.string().optional(),
+  "dataSource": zod.string().optional(),
+  "cacheFile": zod.string().optional(),
   "createdAt": zod.number().optional()
 }))
 })

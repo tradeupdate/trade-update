@@ -11,8 +11,8 @@ import { eq, desc, sql, and, gte } from "drizzle-orm";
 import { requireAdmin } from "../middleware/auth.js";
 import { botManager } from "../services/bot.js";
 import { sendApprovedEmail, sendRejectedEmail } from "../services/email.js";
-import { score } from "../services/scoring.js";
 import { derivService } from "../services/deriv.js";
+import { runDeterministicBacktest, deleteCacheFile, getCacheStatus } from "../services/backtest-engine.js";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
@@ -393,143 +393,126 @@ router.get("/copy-trade/history", async (_req, res) => {
   }
 });
 
-// Backtest
+// Backtest — deterministic engine
 router.post("/backtest/run", async (req, res) => {
   try {
-    const { strategyId, dateFrom, dateTo } = req.body;
+    const { strategyId, dateFrom, dateTo, refreshData } = req.body;
+    if (!strategyId) { res.status(400).json({ error: "strategyId required" }); return; }
 
-    // Fetch strategy config
     const strategyRows = await db.select().from(strategiesTable).where(eq(strategiesTable.id, strategyId)).limit(1);
     const strategy = strategyRows[0];
-    const scoreThreshold = strategy?.scoreThreshold ?? 38;
-    const maxRisk = strategy?.maxRiskPercent ?? 1.0;
-    const tp2Multi = strategy?.tp2Multiplier ?? 3.0;
-    const slMulti = strategy?.stopMultiplier ?? 1.5;
-    const winProbBase = strategy ? (strategy.winRate ?? 68) / 100 : 0.68;
+    if (!strategy) { res.status(404).json({ error: "Strategy not found" }); return; }
 
-    // Monte Carlo backtest simulation based on strategy parameters
-    // Determines how many trading days fall in the date window
-    const fromTs = dateFrom ?? Math.floor(Date.now() / 1000) - 86400 * 30;
-    const toTs = dateTo ?? Math.floor(Date.now() / 1000);
-    const tradingDays = Math.max(5, Math.min(90, Math.round((toTs - fromTs) / 86400)));
-    const maxTradesPerDay = strategy?.maxTradesDay ?? 4;
-    const rr = tp2Multi / slMulti; // e.g. 3/1.5 = 2
+    const now = Math.floor(Date.now() / 1000);
+    const from = dateFrom ?? now - 86400 * 7;
+    const to = dateTo ?? now;
 
-    const trades: { pnl: number; scoreVal: number; duration: number }[] = [];
-    let simBalance = 5000;
-    let peakBal = 5000;
-    let consLosses = 0;
+    const config = {
+      scoreThreshold: strategy.scoreThreshold ?? 38,
+      maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+      stopMultiplier: strategy.stopMultiplier ?? 1.5,
+      tp1Multiplier: strategy.tp1Multiplier ?? 1.5,
+      tp2Multiplier: strategy.tp2Multiplier ?? 3.0,
+      maxTradesDay: strategy.maxTradesDay ?? 4,
+      consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+    };
 
-    for (let day = 0; day < tradingDays; day++) {
-      // Not every day has signals — roughly 70% of days have qualifying setups
-      if (Math.random() > 0.70) continue;
-
-      const tradesThisDay = Math.floor(Math.random() * maxTradesPerDay) + 1;
-      let dailyPnl = 0;
-      const dailyLossLimit = simBalance * 0.05;
-
-      for (let t = 0; t < tradesThisDay; t++) {
-        // Stop if daily loss limit hit
-        if (dailyPnl <= -dailyLossLimit) break;
-
-        const stake = simBalance * (maxRisk / 100);
-        // Simulate signal quality: score between threshold and 50
-        const scoreVal = scoreThreshold + Math.random() * (50 - scoreThreshold);
-        // Win prob: base rate, adjusted by signal strength and consecutive losses
-        const qualityBoost = scoreVal > (scoreThreshold + 5) ? 0.04 : 0;
-        const winProb = Math.min(0.82, winProbBase + qualityBoost - (consLosses * 0.04));
-        const isWin = Math.random() < winProb;
-
-        const pnl = isWin
-          ? Math.round(stake * rr * 100) / 100
-          : -Math.round(stake * 100) / 100;
-        const duration = isWin
-          ? Math.floor(Math.random() * 13 + 5)
-          : Math.floor(Math.random() * 9 + 2);
-
-        simBalance += pnl;
-        dailyPnl += pnl;
-        if (simBalance > peakBal) peakBal = simBalance;
-        isWin ? (consLosses = 0) : consLosses++;
-        trades.push({ pnl, scoreVal: Math.round(scoreVal * 10) / 10, duration });
-
-        if (simBalance <= 0) break;
-      }
-      if (simBalance <= 0) break;
-    }
-
-    const wins = trades.filter(t => t.pnl > 0);
-    const losses = trades.filter(t => t.pnl <= 0);
-    const totalPnl = Math.round(trades.reduce((s, t) => s + t.pnl, 0) * 100) / 100;
-    const winRate = trades.length ? Math.round((wins.length / trades.length) * 1000) / 10 : 0;
-
-    const winPnl = wins.reduce((s, t) => s + t.pnl, 0);
-    const lossPnl = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-    const profitFactor = Math.round((lossPnl > 0 ? winPnl / lossPnl : 9.99) * 100) / 100;
-
-    let maxDD = 0, peak = 5000, runBal = 5000;
-    const equityCurve: { index: number; value: number }[] = [];
-    trades.forEach((t, i) => {
-      runBal += t.pnl;
-      if (runBal > peak) peak = runBal;
-      const dd = (peak - runBal) / peak;
-      if (dd > maxDD) maxDD = dd;
-      equityCurve.push({ index: i, value: Math.round(runBal * 100) / 100 });
-    });
-
-    const avgDuration = trades.length
-      ? Math.round(trades.reduce((s, t) => s + t.duration, 0) / trades.length * 10) / 10
-      : 0;
-    const bestTrade = trades.length ? Math.max(...trades.map(t => t.pnl)) : 0;
-    const worstTrade = trades.length ? Math.min(...trades.map(t => t.pnl)) : 0;
+    const result = await runDeterministicBacktest(
+      strategyId, config, from, to,
+      req.user!.userId,
+      !!refreshData,
+      5000,
+    );
 
     const id = randomUUID();
-    const now = Math.floor(Date.now() / 1000);
     await db.insert(backtestResultsTable).values({
-      id, strategyId, runBy: req.user!.userId,
-      dateFrom: dateFrom ?? now - 86400 * 30,
-      dateTo: dateTo ?? now,
-      totalTrades: trades.length,
-      wins: wins.length,
-      losses: losses.length,
-      winRate,
-      totalPnl,
-      profitFactor,
-      maxDrawdown: Math.round(maxDD * 10000) / 10000,
-      equityCurve: JSON.stringify(equityCurve),
-      bestTrade,
-      worstTrade,
-      avgDurationMinutes: avgDuration,
-      sharpeRatio: Math.round((1.4 + Math.random() * 0.8) * 100) / 100,
+      id,
+      runId: result.runId,
+      strategyId,
+      runBy: req.user!.userId,
+      dateFrom: from,
+      dateTo: to,
+      totalTrades: result.totalTrades,
+      wins: result.wins,
+      losses: result.losses,
+      winRate: result.winRate,
+      totalPnl: result.totalPnl,
+      profitFactor: result.profitFactor,
+      maxDrawdown: result.maxDrawdown,
+      equityCurve: JSON.stringify(result.equityCurve),
+      bestTrade: result.bestTrade,
+      worstTrade: result.worstTrade,
+      avgDurationMinutes: result.avgDurationMinutes,
+      sharpeRatio: result.sharpeRatio,
+      candlesUsed: result.candlesUsed,
+      candleHash: result.candleHash,
+      dataSource: result.dataSource,
+      cacheFile: result.cacheFile,
       createdAt: now,
     });
 
-    logger.info({ strategyId, trades: trades.length, winRate, totalPnl }, "Backtest complete");
     res.json({
-      id, strategyId,
-      totalTrades: trades.length,
-      wins: wins.length,
-      losses: losses.length,
-      winRate,
-      profitFactor,
-      maxDrawdown: Math.round(maxDD * 10000) / 10000,
-      totalPnl,
-      equityCurve,
-      bestTrade,
-      worstTrade,
-      avgDurationMinutes: avgDuration,
-      sharpeRatio: Math.round((1.4 + Math.random() * 0.8) * 100) / 100,
+      id,
+      runId: result.runId,
+      strategyId,
+      totalTrades: result.totalTrades,
+      wins: result.wins,
+      losses: result.losses,
+      winRate: result.winRate,
+      profitFactor: result.profitFactor,
+      maxDrawdown: result.maxDrawdown,
+      totalPnl: result.totalPnl,
+      equityCurve: result.equityCurve,
+      bestTrade: result.bestTrade,
+      worstTrade: result.worstTrade,
+      avgDurationMinutes: result.avgDurationMinutes,
+      sharpeRatio: result.sharpeRatio,
+      candlesUsed: result.candlesUsed,
+      candleHash: result.candleHash,
+      dataSource: result.dataSource,
+      dateFrom: from,
+      dateTo: to,
     });
   } catch (err) {
     logger.error({ err }, "Backtest error");
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: err instanceof Error ? err.message : "Server error" });
   }
 });
 
 router.get("/backtest/results", async (_req, res) => {
   try {
-    const results = await db.select().from(backtestResultsTable).orderBy(desc(backtestResultsTable.createdAt)).limit(20);
+    const results = await db.select().from(backtestResultsTable).orderBy(desc(backtestResultsTable.createdAt)).limit(50);
     res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.delete("/backtest/cache", async (req, res) => {
+  try {
+    const dateFrom = parseInt(String(req.query["dateFrom"]));
+    const dateTo = parseInt(String(req.query["dateTo"]));
+    if (isNaN(dateFrom) || isNaN(dateTo)) {
+      res.status(400).json({ error: "dateFrom and dateTo query params required" });
+      return;
+    }
+    const deleted = deleteCacheFile(dateFrom, dateTo);
+    res.json({ deleted, message: deleted ? "Cache cleared" : "No cache file found for that period" });
+  } catch (err) {
+    logger.error({ err }, "Clear backtest cache error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.get("/backtest/cache-status", async (req, res) => {
+  try {
+    const dateFrom = parseInt(String(req.query["dateFrom"]));
+    const dateTo = parseInt(String(req.query["dateTo"]));
+    if (isNaN(dateFrom) || isNaN(dateTo)) {
+      res.status(400).json({ error: "dateFrom and dateTo required" });
+      return;
+    }
+    res.json(getCacheStatus(dateFrom, dateTo));
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }

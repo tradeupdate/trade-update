@@ -1,0 +1,305 @@
+Fix the backtest engine to be completely 
+deterministic. The same strategy, same dates,
+same account must produce identical results 
+every single time it runs.
+
+This is called backtest reproducibility and 
+it is non-negotiable for any serious trading 
+system. If results change between runs the 
+backtest data is meaningless.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 1 — CACHE HISTORICAL CANDLE DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The core problem is fetching live data every run.
+Fix by caching fetched candles to disk.
+
+1. Create a candle cache directory:
+   /server/data/candle-cache/
+
+2. Cache file naming convention:
+   R_75_5m_[dateFrom]_[dateTo].json
+   Example: R_75_5m_1749945600_1751000400.json
+
+3. Before fetching from Deriv, check cache:
+
+async function getHistoricalCandles(
+  symbol: string,
+  granularity: number,
+  dateFrom: number,
+  dateTo: number
+): Promise<Candle[]> {
+
+  const cacheKey = `${symbol}_${granularity}m_${dateFrom}_${dateTo}`
+  const cacheFile = path.join(
+    __dirname, 
+    '../data/candle-cache',
+    `${cacheKey}.json`
+  )
+
+  // CHECK CACHE FIRST
+  if (fs.existsSync(cacheFile)) {
+    console.log(`Cache hit: ${cacheKey}`)
+    const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
+    console.log(`Loaded ${cached.candles.length} cached candles`)
+    console.log(`Cache created: ${new Date(cached.cachedAt).toISOString()}`)
+    return cached.candles
+  }
+
+  console.log(`Cache miss: fetching from Deriv...`)
+  
+  // FETCH FROM DERIV
+  const candles = await fetchFromDeriv(symbol, granularity, dateFrom, dateTo)
+  
+  // SAVE TO CACHE
+  const cacheData = {
+    symbol,
+    granularity,
+    dateFrom,
+    dateTo,
+    candles,
+    cachedAt: Date.now(),
+    count: candles.length
+  }
+  
+  fs.mkdirSync(path.dirname(cacheFile), { recursive: true })
+  fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2))
+  console.log(`Cached ${candles.length} candles to ${cacheFile}`)
+  
+  return candles
+}
+
+4. Add "Refresh Data" button in admin backtest UI:
+   When clicked: delete cache file for that period
+   Then re-fetch from Deriv and cache again
+   Label: "🔄 Refresh Historical Data"
+   Only needed if you want to update the cache
+
+5. Show cache status in backtest UI:
+   "Using cached data from [date cached]" (grey)
+   "Data freshly fetched from Deriv" (teal)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 2 — STRICT CANDLE SORTING AND DEDUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Even with caching, the candle array must be
+processed identically every time.
+
+After loading candles (from cache or Deriv):
+
+function normalizeCandles(rawCandles: any[]): Candle[] {
+  
+  // 1. Map to standard format
+  const candles: Candle[] = rawCandles.map(c => ({
+    time: typeof c.epoch === 'number' ? c.epoch :
+          typeof c.time === 'number' ? c.time :
+          parseInt(c.epoch || c.time),
+    open: parseFloat(c.open),
+    high: parseFloat(c.high),
+    low: parseFloat(c.low),
+    close: parseFloat(c.close)
+  }))
+  
+  // 2. Remove any with invalid data
+  const valid = candles.filter(c => 
+    !isNaN(c.time) &&
+    !isNaN(c.open) &&
+    !isNaN(c.high) &&
+    !isNaN(c.low) &&
+    !isNaN(c.close) &&
+    c.high >= c.low &&
+    c.high >= c.open &&
+    c.high >= c.close &&
+    c.low <= c.open &&
+    c.low <= c.close &&
+    c.close > 0
+  )
+  
+  // 3. Sort by time ASCENDING (oldest first)
+  const sorted = valid.sort((a, b) => a.time - b.time)
+  
+  // 4. Remove duplicates (keep first occurrence)
+  const seen = new Set<number>()
+  const deduped = sorted.filter(c => {
+    if (seen.has(c.time)) return false
+    seen.add(c.time)
+    return true
+  })
+  
+  // 5. Validate price range for R_75
+  const prices = deduped.map(c => c.close)
+  const minPrice = Math.min(...prices)
+  const maxPrice = Math.max(...prices)
+  
+  console.log(`Candle validation:
+    Raw: ${rawCandles.length}
+    Valid: ${valid.length}
+    After dedup: ${deduped.length}
+    Price range: ${minPrice.toFixed(2)} - ${maxPrice.toFixed(2)}
+    Time range: ${new Date(deduped[0].time * 1000).toISOString()} 
+              to ${new Date(deduped[deduped.length-1].time * 1000).toISOString()}
+  `)
+  
+  if (minPrice < 20000 || maxPrice > 80000) {
+    console.error('PRICE RANGE ERROR: Prices outside R_75 expected range')
+  }
+  
+  return deduped
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 3 — DETERMINISTIC CANDLE BUILDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Building 5m and 15m from 1m candles must be
+identical every single run.
+
+function build5mCandles(candles1m: Candle[]): Candle[] {
+  const grouped: { [key: number]: Candle[] } = {}
+  
+  candles1m.forEach(candle => {
+    // Round down to nearest 5-minute boundary
+    // This is DETERMINISTIC - same candle always
+    // goes to same group
+    const boundary = Math.floor(candle.time / 300) * 300
+    if (!grouped[boundary]) grouped[boundary] = []
+    grouped[boundary].push(candle)
+  })
+  
+  const candles5m: Candle[] = Object.entries(grouped)
+    .filter(([_, group]) => group.length > 0)
+    .map(([boundary, group]) => {
+      // Sort group by time to ensure consistent OHLC
+      const sorted = group.sort((a, b) => a.time - b.time)
+      return {
+        time: parseInt(boundary),
+        open: sorted[0].open,
+        high: Math.max(...sorted.map(c => c.high)),
+        low: Math.min(...sorted.map(c => c.low)),
+        close: sorted[sorted.length - 1].close
+      }
+    })
+    .sort((a, b) => a.time - b.time)
+  
+  return candles5m
+}
+
+function build15mCandles(candles1m: Candle[]): Candle[] {
+  const grouped: { [key: number]: Candle[] } = {}
+  
+  candles1m.forEach(candle => {
+    // Round down to nearest 15-minute boundary
+    const boundary = Math.floor(candle.time / 900) * 900
+    if (!grouped[boundary]) grouped[boundary] = []
+    grouped[boundary].push(candle)
+  })
+  
+  const candles15m: Candle[] = Object.entries(grouped)
+    .filter(([_, group]) => group.length > 0)
+    .map(([boundary, group]) => {
+      const sorted = group.sort((a, b) => a.time - b.time)
+      return {
+        time: parseInt(boundary),
+        open: sorted[0].open,
+        high: Math.max(...sorted.map(c => c.high)),
+        low: Math.min(...sorted.map(c => c.low)),
+        close: sorted[sorted.length - 1].close
+      }
+    })
+    .sort((a, b) => a.time - b.time)
+  
+  return candles15m
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 4 — REMOVE ALL RANDOMNESS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Search entire codebase for Math.random()
+In files: apex-backtest.ts, apex-scoring.ts,
+backtest engine, scoring engine
+
+Replace every instance:
+
+If Math.random() is used for:
+- Tiebreaking: use a fixed rule instead
+  (e.g. always prefer BUY over SELL on equal score)
+- Simulating price movement: NEVER simulate
+  always use real candle high/low
+- Any other purpose: remove it
+
+Search command to find all instances:
+grep -r "Math.random" server/
+
+Every instance found must be eliminated.
+Trading systems must be 100% deterministic.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 5 — BACKTEST RUN ID AND AUDIT LOG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every backtest run must be logged with a 
+unique ID so results can be traced and compared.
+
+When backtest starts:
+const runId = `BT_${Date.now()}_${userId}`
+console.log(`Backtest started: ${runId}`)
+
+Save to backtest_results table:
+- run_id: runId
+- candles_used: total candle count
+- candle_hash: simple checksum of candle data
+  (sum of all close prices, used to verify 
+   same data was used)
+- data_source: 'cache' | 'deriv_fresh'
+- cache_file: path to cache file used
+
+Calculate candle checksum:
+function candleChecksum(candles: Candle[]): string {
+  const sum = candles.reduce((acc, c) => acc + c.close, 0)
+  const count = candles.length
+  return `${count}:${sum.toFixed(2)}`
+}
+
+If two runs have the same date range and 
+same candle_hash but different results:
+There is still a bug in the scoring logic.
+Log this as a critical error.
+
+If two runs have same date range but 
+different candle_hash:
+The data source returned different data.
+This is why results differ.
+
+Show in admin backtest history:
+Each past run shows:
+Run ID | Date Run | Candles | Data Source | 
+Candle Hash | Trades | Win Rate | P&L
+
+If two runs show different hash for same period:
+Show warning: "⚠ Data mismatch between runs"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 6 — BACKTEST HISTORY DISPLAY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The history section currently shows multiple 
+runs without explaining why they differ.
+
+Update the backtest history display:
+
+Each history card shows:
+Strategy name
+Date range (e.g. "Jun 22 - Jun 28")
+P&L and Win Rate
+Run ID (small grey text)
+Data source badge: 
+  "Cached" (grey) or "Fresh Fetch" (teal)
+Candle count: "847 candles"
+
+When two runs show different results for 
+same date range add a warning badge:
+"⚠ Results differ from other runs 
+on

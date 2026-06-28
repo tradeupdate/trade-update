@@ -10,4 +10,5 @@ export interface BacktestInput {
   strategyId: string;
   dateFrom: number;
   dateTo: number;
+  refreshData?: boolean;
 }
