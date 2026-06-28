@@ -8,6 +8,7 @@ export interface ScoreResult {
   pullback: number;
   risk: number;
   direction: "BUY" | "SELL" | "NONE";
+  regime: "TRENDING" | "RANGING";
   trendDirection: "BULL" | "BEAR" | "NEUTRAL";
   bandTouched: "UPPER" | "LOWER" | "NONE";
   ema9: number;
@@ -176,6 +177,9 @@ export function score(
   const lastEma50 = ema50_15[ema50_15.length - 1] ?? NaN;
   const adxVal = adx(candles15m);
 
+  // Regime detection: ADX < 18 = ranging market
+  const regime: "TRENDING" | "RANGING" = adxVal < 18 ? "RANGING" : "TRENDING";
+
   let trendScore = 0;
   let trendDirection: "BULL" | "BEAR" | "NEUTRAL" = "NEUTRAL";
 
@@ -191,7 +195,6 @@ export function score(
     else { trendScore = 2; }
   }
 
-  // SMC bonus
   const smcBos = false;
   const smcChoch = false;
   const orderBlockNearby = false;
@@ -266,7 +269,6 @@ export function score(
   const priceVsEma21 = lastEma21_5m > 0 ? Math.abs(curPrice1m - lastEma21_5m) / lastEma21_5m : 1;
   const priceVsMidBb = lastBb.mid && lastBb.mid > 0 ? Math.abs(curPrice1m - lastBb.mid) / lastBb.mid : 1;
 
-  // FIX: relaxed zone thresholds (was 0.001 = 0.1%, now 0.005 = 0.5%)
   const inPullbackZone = priceVsEma21 < 0.005 || priceVsMidBb < 0.005;
   let pullbackScore = 0;
   if (inPullbackZone) {
@@ -315,7 +317,6 @@ export function score(
   if (rangePos > 0.8) rangeContext = "top";
   else if (rangePos < 0.2) rangeContext = "bottom";
 
-  // Apply context adjustment
   let adjustedTrend = trendScore;
   if (rangeContext === "top") {
     adjustedTrend = trendDirection === "BULL" ? adjustedTrend * 0.9 : adjustedTrend * 1.05;
@@ -323,37 +324,44 @@ export function score(
     adjustedTrend = trendDirection === "BEAR" ? adjustedTrend * 0.9 : adjustedTrend * 1.05;
   }
 
-  // FIX: removed patternFound cap (was: patternFound ? totalRaw : Math.min(25, totalRaw))
-  // Pattern is now a bonus only — no longer a score gate
   const patternBonus = patternFound ? 3 : 0;
   const totalRaw = adjustedTrend + volatilityScore + timingScore + pullbackScore + riskScore + patternBonus;
   const total = Math.min(50, Math.max(0, totalRaw));
 
   // ── Signal Direction ──────────────────────────────────────────────────────
-  // FIX: Replaced 6-condition AND gate with practical multi-tier logic
   let direction: "BUY" | "SELL" | "NONE" = "NONE";
-  const adxStrong = adxVal >= 25;
-  const adxMild = adxVal >= 18;
 
-  if (adxStrong) {
-    // Strong trend: follow trend direction with RSI filter
-    if (trendDirection === "BULL" && lastRsi < 70) direction = "BUY";
-    else if (trendDirection === "BEAR" && lastRsi > 30) direction = "SELL";
-  } else if (adxMild) {
-    // Mild trend: require more RSI confirmation
-    if (trendDirection === "BULL" && lastRsi < 60) direction = "BUY";
-    else if (trendDirection === "BEAR" && lastRsi > 40) direction = "SELL";
+  if (regime === "RANGING") {
+    // Mean-reversion mode: fade Bollinger Band touches
+    // More permissive RSI thresholds (42/58 vs 28/72) since we're fading rather than following
+    if (bandTouched === "LOWER" && lastRsi < 42) direction = "BUY";
+    else if (bandTouched === "UPPER" && lastRsi > 58) direction = "SELL";
+    // Additional stochastic confirmation for ranging
+    if (direction === "BUY" && lastStoch.k > 60) direction = "NONE";
+    if (direction === "SELL" && lastStoch.k < 40) direction = "NONE";
+  } else {
+    // Trending mode: follow trend direction with RSI filter
+    const adxStrong = adxVal >= 25;
+    const adxMild = adxVal >= 18;
+
+    if (adxStrong) {
+      if (trendDirection === "BULL" && lastRsi < 70) direction = "BUY";
+      else if (trendDirection === "BEAR" && lastRsi > 30) direction = "SELL";
+    } else if (adxMild) {
+      if (trendDirection === "BULL" && lastRsi < 60) direction = "BUY";
+      else if (trendDirection === "BEAR" && lastRsi > 40) direction = "SELL";
+    }
+
+    // Oscillating fallback at extremes
+    if (direction === "NONE") {
+      if (lastRsi < 28 || (lastStoch.k < 20 && bandTouched === "LOWER")) direction = "BUY";
+      else if (lastRsi > 72 || (lastStoch.k > 80 && bandTouched === "UPPER")) direction = "SELL";
+    }
+
+    // Band touch anti-confirmation (only in trending mode)
+    if (direction === "BUY" && bandTouched === "UPPER") direction = "NONE";
+    if (direction === "SELL" && bandTouched === "LOWER") direction = "NONE";
   }
-
-  // Oscillating / counter-trend at extremes
-  if (direction === "NONE") {
-    if (lastRsi < 28 || (lastStoch.k < 20 && bandTouched === "LOWER")) direction = "BUY";
-    else if (lastRsi > 72 || (lastStoch.k > 80 && bandTouched === "UPPER")) direction = "SELL";
-  }
-
-  // Band touch confirmation bonus — align direction with band
-  if (direction === "BUY" && bandTouched === "UPPER") direction = "NONE";
-  if (direction === "SELL" && bandTouched === "LOWER") direction = "NONE";
 
   // ── Spike & Consolidation ─────────────────────────────────────────────────
   const atr1m = atr(candles1m.slice(-20), 14);
@@ -373,6 +381,7 @@ export function score(
     pullback: Math.round(pullbackScore * 10) / 10,
     risk: Math.round(riskScore * 10) / 10,
     direction,
+    regime,
     trendDirection,
     bandTouched,
     ema9: isNaN(lastEma9) ? 0 : Math.round(lastEma9 * 100) / 100,

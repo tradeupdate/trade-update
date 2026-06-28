@@ -2017,6 +2017,60 @@ components:
           type: integer
         refreshData:
           type: boolean
+        sessionFilterEnabled:
+          type: boolean
+        sessionStartHour:
+          type: integer
+        sessionEndHour:
+          type: integer
+
+    FeatureImportance:
+      type: object
+      properties:
+        trend:
+          type: number
+        volatility:
+          type: number
+        timing:
+          type: number
+        pullback:
+          type: number
+        risk:
+          type: number
+
+    RegimeStats:
+      type: object
+      properties:
+        trendingCandles:
+          type: integer
+        rangingCandles:
+          type: integer
+        trendingTrades:
+          type: integer
+        rangingTrades:
+          type: integer
+
+    ScoreHistogramBucket:
+      type: object
+      properties:
+        bucket:
+          type: string
+        count:
+          type: integer
+        trades:
+          type: integer
+        wins:
+          type: integer
+
+    PartialExitStats:
+      type: object
+      properties:
+        tp1Hits:
+          type: integer
+        tp2Hits:
+          type: integer
+        beHits:
+          type: integer
 
     BacktestResult:
       type: object
@@ -2080,6 +2134,16 @@ components:
           type: string
         createdAt:
           type: integer
+        featureImportance:
+          $ref: "#/components/schemas/FeatureImportance"
+        regimeStats:
+          $ref: "#/components/schemas/RegimeStats"
+        scoreHistogram:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoreHistogramBucket"
+        partialExitStats:
+          $ref: "#/components/schemas/PartialExitStats"
 
     BacktestResultListResponse:
       type: object

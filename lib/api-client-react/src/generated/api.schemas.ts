@@ -655,6 +655,37 @@ export interface BacktestInput {
   dateFrom: number;
   dateTo: number;
   refreshData?: boolean;
+  sessionFilterEnabled?: boolean;
+  sessionStartHour?: number;
+  sessionEndHour?: number;
+}
+
+export interface FeatureImportance {
+  trend?: number;
+  volatility?: number;
+  timing?: number;
+  pullback?: number;
+  risk?: number;
+}
+
+export interface RegimeStats {
+  trendingCandles?: number;
+  rangingCandles?: number;
+  trendingTrades?: number;
+  rangingTrades?: number;
+}
+
+export interface ScoreHistogramBucket {
+  bucket?: string;
+  count?: number;
+  trades?: number;
+  wins?: number;
+}
+
+export interface PartialExitStats {
+  tp1Hits?: number;
+  tp2Hits?: number;
+  beHits?: number;
 }
 
 export interface BacktestResult {
@@ -684,6 +715,10 @@ export interface BacktestResult {
   dataSource?: string;
   cacheFile?: string;
   createdAt?: number;
+  featureImportance?: FeatureImportance;
+  regimeStats?: RegimeStats;
+  scoreHistogram?: ScoreHistogramBucket[];
+  partialExitStats?: PartialExitStats;
 }
 
 export interface BacktestResultListResponse {

@@ -407,14 +407,18 @@ router.post("/backtest/run", async (req, res) => {
     const from = dateFrom ?? now - 86400 * 7;
     const to = dateTo ?? now;
 
+    const { sessionFilterEnabled, sessionStartHour, sessionEndHour } = req.body;
     const config = {
       scoreThreshold: strategy.scoreThreshold ?? 38,
       maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
       stopMultiplier: strategy.stopMultiplier ?? 1.5,
-      tp1Multiplier: strategy.tp1Multiplier ?? 1.5,
+      tp1Multiplier: strategy.tp1Multiplier ?? 2.0,
       tp2Multiplier: strategy.tp2Multiplier ?? 3.0,
       maxTradesDay: strategy.maxTradesDay ?? 4,
       consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+      sessionFilterEnabled: sessionFilterEnabled !== false,
+      sessionStartHour: sessionStartHour ?? 6,
+      sessionEndHour: sessionEndHour ?? 20,
     };
 
     const result = await runDeterministicBacktest(
@@ -472,6 +476,10 @@ router.post("/backtest/run", async (req, res) => {
       dataSource: result.dataSource,
       dateFrom: from,
       dateTo: to,
+      featureImportance: result.featureImportance,
+      regimeStats: result.regimeStats,
+      scoreHistogram: result.scoreHistogram,
+      partialExitStats: result.partialExitStats,
     });
   } catch (err) {
     logger.error({ err }, "Backtest error");

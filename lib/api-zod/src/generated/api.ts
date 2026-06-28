@@ -1284,7 +1284,10 @@ export const RunBacktestBody = zod.object({
   "strategyId": zod.string(),
   "dateFrom": zod.number(),
   "dateTo": zod.number(),
-  "refreshData": zod.boolean().optional()
+  "refreshData": zod.boolean().optional(),
+  "sessionFilterEnabled": zod.boolean().optional(),
+  "sessionStartHour": zod.number().optional(),
+  "sessionEndHour": zod.number().optional()
 })
 
 export const RunBacktestResponse = zod.object({
@@ -1334,7 +1337,31 @@ export const RunBacktestResponse = zod.object({
   "candleHash": zod.string().optional(),
   "dataSource": zod.string().optional(),
   "cacheFile": zod.string().optional(),
-  "createdAt": zod.number().optional()
+  "createdAt": zod.number().optional(),
+  "featureImportance": zod.object({
+  "trend": zod.number().optional(),
+  "volatility": zod.number().optional(),
+  "timing": zod.number().optional(),
+  "pullback": zod.number().optional(),
+  "risk": zod.number().optional()
+}).optional(),
+  "regimeStats": zod.object({
+  "trendingCandles": zod.number().optional(),
+  "rangingCandles": zod.number().optional(),
+  "trendingTrades": zod.number().optional(),
+  "rangingTrades": zod.number().optional()
+}).optional(),
+  "scoreHistogram": zod.array(zod.object({
+  "bucket": zod.string().optional(),
+  "count": zod.number().optional(),
+  "trades": zod.number().optional(),
+  "wins": zod.number().optional()
+})).optional(),
+  "partialExitStats": zod.object({
+  "tp1Hits": zod.number().optional(),
+  "tp2Hits": zod.number().optional(),
+  "beHits": zod.number().optional()
+}).optional()
 })
 
 
@@ -1389,7 +1416,31 @@ export const GetBacktestResultsResponse = zod.object({
   "candleHash": zod.string().optional(),
   "dataSource": zod.string().optional(),
   "cacheFile": zod.string().optional(),
-  "createdAt": zod.number().optional()
+  "createdAt": zod.number().optional(),
+  "featureImportance": zod.object({
+  "trend": zod.number().optional(),
+  "volatility": zod.number().optional(),
+  "timing": zod.number().optional(),
+  "pullback": zod.number().optional(),
+  "risk": zod.number().optional()
+}).optional(),
+  "regimeStats": zod.object({
+  "trendingCandles": zod.number().optional(),
+  "rangingCandles": zod.number().optional(),
+  "trendingTrades": zod.number().optional(),
+  "rangingTrades": zod.number().optional()
+}).optional(),
+  "scoreHistogram": zod.array(zod.object({
+  "bucket": zod.string().optional(),
+  "count": zod.number().optional(),
+  "trades": zod.number().optional(),
+  "wins": zod.number().optional()
+})).optional(),
+  "partialExitStats": zod.object({
+  "tp1Hits": zod.number().optional(),
+  "tp2Hits": zod.number().optional(),
+  "beHits": zod.number().optional()
+}).optional()
 }))
 })
 

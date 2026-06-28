@@ -11,4 +11,7 @@ export interface BacktestInput {
   dateFrom: number;
   dateTo: number;
   refreshData?: boolean;
+  sessionFilterEnabled?: boolean;
+  sessionStartHour?: number;
+  sessionEndHour?: number;
 }

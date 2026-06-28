@@ -12,12 +12,13 @@ import { useState, useMemo } from "react";
 import {
   Play, BarChart2, Loader2, TrendingUp, TrendingDown,
   Clock, Target, RefreshCw, Database, AlertTriangle, Hash,
+  Activity, Layers, GitBranch, Zap,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, ReferenceLine,
+  CartesianGrid, ReferenceLine, BarChart, Bar, Cell,
 } from "recharts";
 
 function formatDate(ts: number): string {
@@ -37,12 +38,36 @@ function DataSourceBadge({ source }: { source?: string | null }) {
   );
 }
 
+function CorrelationBar({ label, value }: { label: string; value: number }) {
+  const pct = Math.abs(value) * 100;
+  const isPositive = value >= 0;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-text-secondary w-16 shrink-0 capitalize">{label}</span>
+      <div className="flex-1 flex items-center gap-1 h-4">
+        <div className="flex-1 bg-muted rounded-full overflow-hidden h-2 relative">
+          <div
+            className={`h-full rounded-full transition-all ${isPositive ? "bg-primary" : "bg-accent-red"}`}
+            style={{ width: `${Math.max(3, pct)}%` }}
+          />
+        </div>
+        <span className={`text-[10px] font-mono w-10 text-right ${isPositive ? "text-primary" : "text-accent-red"}`}>
+          {value >= 0 ? "+" : ""}{value.toFixed(3)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminBacktest() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [strategyId, setStrategyId] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [sessionFilterEnabled, setSessionFilterEnabled] = useState(true);
+  const [sessionStartHour, setSessionStartHour] = useState(6);
+  const [sessionEndHour, setSessionEndHour] = useState(20);
   const [activeResult, setActiveResult] = useState<any>(null);
 
   const { data: strategies } = useGetStrategies({ query: { queryKey: ["strategies"] } });
@@ -64,14 +89,16 @@ export default function AdminBacktest() {
     const to = dateTo ? Math.floor(new Date(dateTo).getTime() / 1000) : Math.floor(Date.now() / 1000);
 
     runMutation.mutate(
-      { data: { strategyId, dateFrom: from, dateTo: to, refreshData } },
+      { data: { strategyId, dateFrom: from, dateTo: to, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour } },
       {
         onSuccess: (result) => {
           setActiveResult(result);
           queryClient.invalidateQueries({ queryKey: getGetBacktestResultsQueryKey() });
+          const ranging = (result as any).regimeStats?.rangingTrades ?? 0;
+          const trending = (result as any).regimeStats?.trendingTrades ?? 0;
           toast({
             title: refreshData ? "Data refreshed & backtest complete" : "Backtest complete",
-            description: `${result.totalTrades} trades · Win Rate: ${result.winRate?.toFixed(1)}% · P&L: $${result.totalPnl?.toFixed(2)} · ${result.candlesUsed ?? 0} candles`,
+            description: `${result.totalTrades} trades · Win Rate: ${result.winRate?.toFixed(1)}% · P&L: $${result.totalPnl?.toFixed(2)} · ${ranging}R/${trending}T`,
           });
         },
         onError: (err: any) => {
@@ -94,7 +121,6 @@ export default function AdminBacktest() {
 
   const strategyName = strategies?.strategies?.find(s => s.id === (display?.strategyId ?? strategyId))?.name ?? "—";
 
-  // Detect data mismatches: same date range but different candle hashes
   const mismatchedIds = useMemo(() => {
     const results = history?.results ?? [];
     const rangeGroups: Record<string, { hash: string; ids: string[] }> = {};
@@ -114,13 +140,32 @@ export default function AdminBacktest() {
     return mismatched;
   }, [history?.results]);
 
+  const featureImportance = (display as any)?.featureImportance ?? null;
+  const regimeStats = (display as any)?.regimeStats ?? null;
+  const scoreHistogram = (display as any)?.scoreHistogram ?? null;
+  const partialExitStats = (display as any)?.partialExitStats ?? null;
+
+  const totalRegimeCandles = (regimeStats?.trendingCandles ?? 0) + (regimeStats?.rangingCandles ?? 0);
+  const trendingPct = totalRegimeCandles > 0 ? Math.round((regimeStats.trendingCandles / totalRegimeCandles) * 100) : 0;
+  const rangingPct = 100 - trendingPct;
+
+  const histogramData = useMemo(() => {
+    if (!scoreHistogram) return [];
+    return scoreHistogram.map((b: any) => ({
+      bucket: b.bucket,
+      scored: b.count,
+      trades: b.trades,
+      wins: b.wins,
+    }));
+  }, [scoreHistogram]);
+
   return (
     <AdminLayout>
       <div className="flex flex-col gap-6 max-w-7xl mx-auto">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Backtest Engine</h1>
-            <p className="text-xs text-text-secondary mt-0.5">Deterministic · Candle-accurate · Reproducible</p>
+            <p className="text-xs text-text-secondary mt-0.5">Deterministic · Candle-accurate · Reproducible · Partial Exits</p>
           </div>
           {historyLoading && <Loader2 className="w-5 h-5 animate-spin text-primary" />}
         </div>
@@ -161,6 +206,41 @@ export default function AdminBacktest() {
                   onChange={(e) => setDateTo(e.target.value)}
                 />
               </div>
+
+              {/* Session filter */}
+              <div className="border border-border rounded-md p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">Session Filter</label>
+                  <button
+                    onClick={() => setSessionFilterEnabled(!sessionFilterEnabled)}
+                    className={`w-9 h-5 rounded-full transition-colors relative ${sessionFilterEnabled ? "bg-primary" : "bg-muted"}`}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all ${sessionFilterEnabled ? "left-4" : "left-0.5"}`} />
+                  </button>
+                </div>
+                {sessionFilterEnabled && (
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-text-secondary block mb-1">Start (UTC)</label>
+                      <input
+                        type="number" min="0" max="23"
+                        className="w-full h-7 px-2 rounded border border-border bg-background text-foreground text-xs"
+                        value={sessionStartHour}
+                        onChange={(e) => setSessionStartHour(parseInt(e.target.value) || 0)}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] text-text-secondary block mb-1">End (UTC)</label>
+                      <input
+                        type="number" min="0" max="23"
+                        className="w-full h-7 px-2 rounded border border-border bg-background text-foreground text-xs"
+                        value={sessionEndHour}
+                        onChange={(e) => setSessionEndHour(parseInt(e.target.value) || 20)}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             <Button
@@ -190,7 +270,7 @@ export default function AdminBacktest() {
             {(history?.results?.length ?? 0) > 0 && (
               <div className="mt-6">
                 <p className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">History</p>
-                <div className="space-y-1.5 max-h-[340px] overflow-y-auto pr-0.5">
+                <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-0.5">
                   {history!.results!.map((r) => {
                     const hasMismatch = mismatchedIds.has(r.id);
                     return (
@@ -283,7 +363,7 @@ export default function AdminBacktest() {
                       <Target className="w-3.5 h-3.5 text-text-secondary" />
                       <span className="text-xs text-text-secondary">Win Rate</span>
                     </div>
-                    <div className={`text-2xl font-bold tabular-nums ${display.winRate >= 55 ? "text-primary" : "text-accent-red"}`}>
+                    <div className={`text-2xl font-bold tabular-nums ${display.winRate >= 55 ? "text-primary" : display.winRate >= 40 ? "text-yellow-400" : "text-accent-red"}`}>
                       {display.winRate?.toFixed(1)}%
                     </div>
                     <div className="text-xs text-text-secondary mt-0.5">PF: {display.profitFactor?.toFixed(2) ?? "—"}</div>
@@ -340,7 +420,7 @@ export default function AdminBacktest() {
                       </div>
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="h-[300px]">
+                  <CardContent className="h-[240px]">
                     {equityCurve.length > 0 ? (
                       <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={equityCurve} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -374,8 +454,126 @@ export default function AdminBacktest() {
                   </CardContent>
                 </Card>
 
-                {/* Extra stats */}
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {/* Signal Intelligence row */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+                  {/* Feature Importance */}
+                  {featureImportance && (
+                    <Card className="bg-card border-border p-4 md:col-span-1">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Activity className="w-3.5 h-3.5 text-primary" />
+                        <span className="text-xs font-semibold text-foreground uppercase tracking-wide">Feature Importance</span>
+                      </div>
+                      <p className="text-[10px] text-text-secondary mb-3">Pearson r: sub-score vs win/loss outcome</p>
+                      <div className="space-y-2">
+                        {Object.entries(featureImportance as Record<string, number>)
+                          .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+                          .map(([key, val]) => (
+                            <CorrelationBar key={key} label={key} value={val} />
+                          ))}
+                      </div>
+                      {display.totalTrades < 10 && (
+                        <p className="text-[10px] text-yellow-400 mt-2">⚠ Run longer backtest for statistical significance</p>
+                      )}
+                    </Card>
+                  )}
+
+                  {/* Regime Stats + Partial Exits */}
+                  <div className="space-y-4 md:col-span-1">
+                    {regimeStats && (
+                      <Card className="bg-card border-border p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <GitBranch className="w-3.5 h-3.5 text-primary" />
+                          <span className="text-xs font-semibold text-foreground uppercase tracking-wide">Market Regime</span>
+                        </div>
+                        <div className="space-y-2">
+                          <div>
+                            <div className="flex justify-between text-[10px] mb-0.5">
+                              <span className="text-primary">Trending</span>
+                              <span className="text-text-secondary">{trendingPct}% · {regimeStats.trendingTrades} trades</span>
+                            </div>
+                            <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                              <div className="h-full bg-primary rounded-full" style={{ width: `${trendingPct}%` }} />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-[10px] mb-0.5">
+                              <span className="text-yellow-400">Ranging</span>
+                              <span className="text-text-secondary">{rangingPct}% · {regimeStats.rangingTrades} trades</span>
+                            </div>
+                            <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                              <div className="h-full bg-yellow-400 rounded-full" style={{ width: `${rangingPct}%` }} />
+                            </div>
+                          </div>
+                        </div>
+                      </Card>
+                    )}
+
+                    {partialExitStats && (
+                      <Card className="bg-card border-border p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Layers className="w-3.5 h-3.5 text-primary" />
+                          <span className="text-xs font-semibold text-foreground uppercase tracking-wide">Partial Exits</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div>
+                            <div className="text-lg font-bold text-primary tabular-nums">{partialExitStats.tp1Hits}</div>
+                            <div className="text-[10px] text-text-secondary">TP1 hit</div>
+                          </div>
+                          <div>
+                            <div className="text-lg font-bold text-primary tabular-nums">{partialExitStats.tp2Hits}</div>
+                            <div className="text-[10px] text-text-secondary">TP2 hit</div>
+                          </div>
+                          <div>
+                            <div className="text-lg font-bold text-yellow-400 tabular-nums">{partialExitStats.beHits}</div>
+                            <div className="text-[10px] text-text-secondary">Breakeven</div>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-text-secondary mt-2">After TP1: SL moves to entry price (risk-free)</p>
+                      </Card>
+                    )}
+                  </div>
+
+                  {/* Score Distribution */}
+                  {histogramData.length > 0 && (
+                    <Card className="bg-card border-border p-4 md:col-span-1">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Zap className="w-3.5 h-3.5 text-primary" />
+                        <span className="text-xs font-semibold text-foreground uppercase tracking-wide">Score Distribution</span>
+                      </div>
+                      <p className="text-[10px] text-text-secondary mb-2">All scored candles by total score bucket</p>
+                      <div className="h-[120px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={histogramData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                            <XAxis dataKey="bucket" fontSize={9} tick={{ fill: "#8890AA" }} tickLine={false} axisLine={false} />
+                            <YAxis fontSize={9} tick={{ fill: "#8890AA" }} tickLine={false} axisLine={false} />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: "#0F1117", borderColor: "#1C1F2E", color: "#F0F2FF", fontSize: 11 }}
+                              formatter={(v: any, name: string) => [v, name === "scored" ? "Candles" : name === "trades" ? "Entries" : "Wins"]}
+                            />
+                            <Bar dataKey="scored" name="scored" radius={[2, 2, 0, 0]}>
+                              {histogramData.map((entry: any, idx: number) => (
+                                <Cell
+                                  key={idx}
+                                  fill={entry.bucket === "40-45" || entry.bucket === "45+" ? "#00D4A4" : "#1C1F2E"}
+                                />
+                              ))}
+                            </Bar>
+                            <Bar dataKey="trades" name="trades" fill="#3B82F6" radius={[2, 2, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="flex gap-3 mt-1">
+                        <span className="flex items-center gap-1 text-[10px] text-text-secondary"><span className="w-2 h-2 rounded-sm bg-[#1C1F2E] border border-border inline-block" />Scored</span>
+                        <span className="flex items-center gap-1 text-[10px] text-text-secondary"><span className="w-2 h-2 rounded-sm bg-primary inline-block" />Threshold zone</span>
+                        <span className="flex items-center gap-1 text-[10px] text-text-secondary"><span className="w-2 h-2 rounded-sm bg-blue-500 inline-block" />Entries</span>
+                      </div>
+                    </Card>
+                  )}
+                </div>
+
+                {/* Bottom stats */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <Card className="bg-card border-border p-4">
                     <div className="text-xs text-text-secondary mb-1">Profit Factor</div>
                     <div className="text-lg font-bold tabular-nums text-primary">{display.profitFactor?.toFixed(2) ?? "—"}</div>
@@ -391,16 +589,6 @@ export default function AdminBacktest() {
                   <Card className="bg-card border-border p-4">
                     <div className="text-xs text-text-secondary mb-1">Avg Duration</div>
                     <div className="text-lg font-bold tabular-nums">{display.avgDurationMinutes?.toFixed(0) ?? "—"}m</div>
-                  </Card>
-                  <Card className="bg-card border-border p-4">
-                    <div className="text-xs text-text-secondary mb-1">Sharpe Ratio</div>
-                    <div className={`text-lg font-bold tabular-nums ${(display.sharpeRatio ?? 0) >= 1 ? "text-primary" : "text-accent-red"}`}>
-                      {display.sharpeRatio?.toFixed(2) ?? "—"}
-                    </div>
-                  </Card>
-                  <Card className="bg-card border-border p-4">
-                    <div className="text-xs text-text-secondary mb-1">Strategy</div>
-                    <div className="text-sm font-bold truncate">{strategyName}</div>
                   </Card>
                 </div>
               </>

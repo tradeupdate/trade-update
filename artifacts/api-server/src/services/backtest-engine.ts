@@ -27,6 +27,37 @@ export interface BacktestStrategyConfig {
   tp2Multiplier: number;
   maxTradesDay: number;
   consecutiveLossStop: number;
+  sessionFilterEnabled: boolean;
+  sessionStartHour: number;
+  sessionEndHour: number;
+}
+
+export interface FeatureImportance {
+  trend: number;
+  volatility: number;
+  timing: number;
+  pullback: number;
+  risk: number;
+}
+
+export interface RegimeStats {
+  trendingCandles: number;
+  rangingCandles: number;
+  trendingTrades: number;
+  rangingTrades: number;
+}
+
+export interface ScoreHistogramBucket {
+  bucket: string;
+  count: number;
+  trades: number;
+  wins: number;
+}
+
+export interface PartialExitStats {
+  tp1Hits: number;
+  tp2Hits: number;
+  beHits: number;
 }
 
 export interface BacktestRunResult {
@@ -47,6 +78,10 @@ export interface BacktestRunResult {
   candleHash: string;
   dataSource: "cache" | "deriv_fresh";
   cacheFile: string;
+  featureImportance: FeatureImportance;
+  regimeStats: RegimeStats;
+  scoreHistogram: ScoreHistogramBucket[];
+  partialExitStats: PartialExitStats;
 }
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
@@ -282,6 +317,45 @@ function calcSharpeRatio(returns: number[]): number {
   return parseFloat(((mean / std) * Math.sqrt(252)).toFixed(3));
 }
 
+// ─── Pearson Correlation ──────────────────────────────────────────────────────
+
+function pearsonR(x: number[], y: number[]): number {
+  if (x.length !== y.length || x.length < 2) return 0;
+  const n = x.length;
+  const meanX = x.reduce((a, b) => a + b, 0) / n;
+  const meanY = y.reduce((a, b) => a + b, 0) / n;
+  let num = 0, denomX = 0, denomY = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = x[i]! - meanX;
+    const dy = y[i]! - meanY;
+    num += dx * dy;
+    denomX += dx * dx;
+    denomY += dy * dy;
+  }
+  const denom = Math.sqrt(denomX * denomY);
+  return denom === 0 ? 0 : Math.round((num / denom) * 1000) / 1000;
+}
+
+// ─── Score Histogram ──────────────────────────────────────────────────────────
+
+const HISTOGRAM_BUCKETS = [
+  { label: "<20",   min: -Infinity, max: 20 },
+  { label: "20-25", min: 20, max: 25 },
+  { label: "25-30", min: 25, max: 30 },
+  { label: "30-35", min: 30, max: 35 },
+  { label: "35-40", min: 35, max: 40 },
+  { label: "40-45", min: 40, max: 45 },
+  { label: "45+",   min: 45, max: Infinity },
+];
+
+function getHistogramBucket(score: number): number {
+  for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
+    const b = HISTOGRAM_BUCKETS[i]!;
+    if (score >= b.min && score < b.max) return i;
+  }
+  return HISTOGRAM_BUCKETS.length - 1;
+}
+
 // ─── Run Deterministic Backtest ───────────────────────────────────────────────
 
 export async function runDeterministicBacktest(
@@ -307,27 +381,33 @@ export async function runDeterministicBacktest(
 
   logger.info({ runId, candles5m: raw5m.length, candles15m: all15m.length, hash: candleHash, dataSource, cachedAt }, "Backtest: candles ready");
 
-  const { stopMultiplier: slMulti, tp2Multiplier: tp2Multi, scoreThreshold, maxRiskPercent, maxTradesDay, consecutiveLossStop } = config;
-  const rr = tp2Multi / slMulti;
+  const { stopMultiplier: slMulti, tp1Multiplier: tp1Multi, tp2Multiplier: tp2Multi, scoreThreshold, maxRiskPercent, maxTradesDay, consecutiveLossStop } = config;
 
-  // FIX: WARMUP must be >= 170 so that 50+ 15m candles exist before scoring.
-  // At 5m granularity: 170 × 5m = 850 min = 14.2 hours → ~56 15m candles.
-  // Previous value of 60 only produced 20 15m candles → score() always returned null.
+  // Session filter defaults
+  const sessionEnabled = config.sessionFilterEnabled ?? true;
+  const sessionStart = config.sessionStartHour ?? 6;
+  const sessionEnd = config.sessionEndHour ?? 20;
+
   const WARMUP = 175;
   const MAX_HOLD_BARS = 12;
 
   interface OpenTrade {
     direction: "BUY" | "SELL";
     entryPrice: number;
-    stake: number;
+    fullStake: number;
     slPrice: number;
-    tpPrice: number;
+    tp1Price: number;
+    tp2Price: number;
     entryTime: number;
     barsHeld: number;
     scoreVal: number;
+    scoreBreakdown: { trend: number; volatility: number; timing: number; pullback: number; risk: number };
+    regime: "TRENDING" | "RANGING";
+    halfClosed: boolean;
+    halfPnlLocked: number;
   }
 
-  const tradeList: { pnl: number; duration: number; scoreVal: number }[] = [];
+  const tradeList: { pnl: number; duration: number; scoreVal: number; scoreBreakdown: { trend: number; volatility: number; timing: number; pullback: number; risk: number } }[] = [];
   const returns: number[] = [];
   const equityCurve: { index: number; value: number }[] = [];
 
@@ -347,21 +427,29 @@ export async function runDeterministicBacktest(
   let scoreErrors = 0;
   let tradeDailyLimit = 0;
   let tradeConsLossLimit = 0;
+  let sessionFiltered = 0;
   let firstScoreLogged = false;
+
+  // Lever 1: Score histogram
+  const histogramCounts = HISTOGRAM_BUCKETS.map(b => ({ bucket: b.label, count: 0, trades: 0, wins: 0 }));
+
+  // Lever 2 + 5: Regime stats
+  const regimeStats: RegimeStats = { trendingCandles: 0, rangingCandles: 0, trendingTrades: 0, rangingTrades: 0 };
+
+  // Lever 3: Partial exit stats
+  const partialExitStats: PartialExitStats = { tp1Hits: 0, tp2Hits: 0, beHits: 0 };
 
   console.log(`=== BACKTEST STARTING ===`);
   console.log(`Total 5m candles: ${raw5m.length}  15m candles: ${all15m.length}  WARMUP: ${WARMUP}`);
   if (raw5m.length > 0) {
     console.log(`Date range: ${new Date(raw5m[0]!.time * 1000).toISOString()} → ${new Date(raw5m[raw5m.length - 1]!.time * 1000).toISOString()}`);
-    console.log(`First candle: time=${raw5m[0]!.time} close=${raw5m[0]!.close}`);
   }
-  console.log(`Config: threshold=${scoreThreshold} risk=${maxRiskPercent}% slX=${slMulti} tp2X=${tp2Multi} maxDayTrades=${maxTradesDay} consLossStop=${consecutiveLossStop}`);
+  console.log(`Config: threshold=${scoreThreshold} risk=${maxRiskPercent}% slX=${slMulti} tp1X=${tp1Multi} tp2X=${tp2Multi} session=${sessionEnabled ? `${sessionStart}-${sessionEnd}UTC` : "off"}`);
 
   for (let i = WARMUP; i < raw5m.length; i++) {
     const candle = raw5m[i];
     if (!candle) continue;
 
-    // Diagnostic: log every 200th candle
     if (i % 200 === 0) {
       console.log(`[BT] Candle ${i}/${raw5m.length} time=${new Date(candle.time * 1000).toISOString()} close=${candle.close} balance=${balance} trades=${tradeList.length}`);
     }
@@ -374,42 +462,88 @@ export async function runDeterministicBacktest(
       if (consLosses >= consecutiveLossStop) consLosses = 0;
     }
 
+    // ── Lever 3: Handle open trade with partial exit logic ─────────────────
     if (openTrade) {
       let closed = false;
-      let pnl = 0;
+      let closePnl = 0;
 
-      if (openTrade.direction === "BUY") {
-        const slHit = candle.low <= openTrade.slPrice;
-        const tpHit = candle.high >= openTrade.tpPrice;
-        if (slHit) { pnl = -openTrade.stake; closed = true; }
-        else if (tpHit) { pnl = Math.round(openTrade.stake * rr * 100) / 100; closed = true; }
+      if (!openTrade.halfClosed) {
+        // Phase 1: check TP1 (partial close) and full SL
+        const tp1Hit = openTrade.direction === "BUY"
+          ? candle.high >= openTrade.tp1Price
+          : candle.low <= openTrade.tp1Price;
+        const slHit = openTrade.direction === "BUY"
+          ? candle.low <= openTrade.slPrice
+          : candle.high >= openTrade.slPrice;
+
+        if (tp1Hit && !slHit) {
+          // Partial exit: close 50% at TP1, move SL to breakeven
+          const rr1 = tp1Multi / slMulti;
+          const halfPnl = Math.round(openTrade.fullStake * 0.5 * rr1 * 100) / 100;
+          balance = Math.round((balance + halfPnl) * 100) / 100;
+          if (balance > peak) peak = balance;
+          openTrade.halfClosed = true;
+          openTrade.halfPnlLocked = halfPnl;
+          openTrade.slPrice = openTrade.entryPrice; // move SL to breakeven
+          partialExitStats.tp1Hits++;
+          console.log(`[BT] TP1 partial exit i=${i} dir=${openTrade.direction} halfPnl=+${halfPnl} slMovedToBE=${openTrade.entryPrice.toFixed(2)}`);
+        } else if (slHit) {
+          closePnl = -openTrade.fullStake;
+          closed = true;
+        }
       } else {
-        const slHit = candle.high >= openTrade.slPrice;
-        const tpHit = candle.low <= openTrade.tpPrice;
-        if (slHit) { pnl = -openTrade.stake; closed = true; }
-        else if (tpHit) { pnl = Math.round(openTrade.stake * rr * 100) / 100; closed = true; }
+        // Phase 2: already closed half; check TP2 or breakeven SL
+        const tp2Hit = openTrade.direction === "BUY"
+          ? candle.high >= openTrade.tp2Price
+          : candle.low <= openTrade.tp2Price;
+        const slHit = openTrade.direction === "BUY"
+          ? candle.low <= openTrade.slPrice // slPrice = entryPrice (BE)
+          : candle.high >= openTrade.slPrice;
+
+        if (tp2Hit) {
+          const rr2 = tp2Multi / slMulti;
+          closePnl = Math.round(openTrade.fullStake * 0.5 * rr2 * 100) / 100;
+          closed = true;
+          partialExitStats.tp2Hits++;
+        } else if (slHit) {
+          closePnl = 0; // breakeven on remaining half
+          closed = true;
+          partialExitStats.beHits++;
+        }
       }
 
+      // Time-based exit
       if (!closed && openTrade.barsHeld >= MAX_HOLD_BARS) {
+        const remainingStake = openTrade.halfClosed ? openTrade.fullStake * 0.5 : openTrade.fullStake;
         const inProfit = openTrade.direction === "BUY"
           ? candle.close > openTrade.entryPrice
           : candle.close < openTrade.entryPrice;
-        pnl = inProfit
-          ? Math.round(openTrade.stake * 0.3 * 100) / 100
-          : -Math.round(openTrade.stake * 0.3 * 100) / 100;
+        closePnl = inProfit
+          ? Math.round(remainingStake * 0.3 * 100) / 100
+          : -Math.round(remainingStake * 0.3 * 100) / 100;
         closed = true;
       }
 
       if (closed) {
-        balance = Math.round((balance + pnl) * 100) / 100;
-        dailyPnl += pnl;
-        tradeList.push({ pnl, duration: (openTrade.barsHeld + 1) * 5, scoreVal: openTrade.scoreVal });
-        returns.push(pnl / startingBalance);
+        balance = Math.round((balance + closePnl) * 100) / 100;
+        const totalTradePnl = Math.round((openTrade.halfPnlLocked + closePnl) * 100) / 100;
+        dailyPnl += totalTradePnl;
+        tradeList.push({ pnl: totalTradePnl, duration: (openTrade.barsHeld + 1) * 5, scoreVal: openTrade.scoreVal, scoreBreakdown: openTrade.scoreBreakdown });
+        returns.push(totalTradePnl / startingBalance);
         if (balance > peak) peak = balance;
         const dd = (peak - balance) / peak;
         if (dd > maxDD) maxDD = dd;
-        consLosses = pnl > 0 ? 0 : consLosses + 1;
+        consLosses = totalTradePnl > 0 ? 0 : consLosses + 1;
         equityCurve.push({ index: tradeList.length - 1, value: balance });
+
+        // Update histogram with trade outcome
+        const bucketIdx = getHistogramBucket(openTrade.scoreVal);
+        if (histogramCounts[bucketIdx]) {
+          histogramCounts[bucketIdx]!.trades++;
+          if (totalTradePnl > 0) histogramCounts[bucketIdx]!.wins++;
+        }
+
+        console.log(`[BT] TRADE CLOSE i=${i} pnl=${totalTradePnl} (locked=${openTrade.halfPnlLocked} + close=${closePnl}) balance=${balance}`);
         openTrade = null;
       } else {
         openTrade.barsHeld++;
@@ -419,15 +553,23 @@ export async function runDeterministicBacktest(
       continue;
     }
 
+    // ── Lever 4: Session filter ────────────────────────────────────────────
+    if (sessionEnabled) {
+      const utcHour = Math.floor((candle.time % 86400) / 3600);
+      if (utcHour < sessionStart || utcHour >= sessionEnd) {
+        sessionFiltered++;
+        continue;
+      }
+    }
+
     if (tradesToday >= maxTradesDay) { tradeDailyLimit++; continue; }
     if (consLosses >= consecutiveLossStop) { tradeConsLossLimit++; continue; }
     if (dailyPnl <= -(balance * 0.05)) continue;
 
-    // Build scoring windows — use larger history for better indicator quality
-    // FIX: pass 50 5m candles (not 30) and 6 candles for synthetic 1m (30 1m candles instead of 20)
+    // Build scoring windows
     const window5m = raw5m.slice(Math.max(0, i - 49), i + 1);
     const window15m = all15m.filter(c => c.time <= candle.time).slice(-60);
-    const synth1m = synthetic1mFrom5m(window5m.slice(-6)); // 6×5 = 30 synthetic 1m candles
+    const synth1m = synthetic1mFrom5m(window5m.slice(-6));
 
     const score5m: Candle[] = window5m.map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: 0 }));
     const score15m: Candle[] = window15m.map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: 0 }));
@@ -449,20 +591,27 @@ export async function runDeterministicBacktest(
       continue;
     }
 
-    // Log first few score results for diagnostics
+    // Lever 1: Score histogram (all scored candles)
+    const bucketIdx = getHistogramBucket(result.total);
+    if (histogramCounts[bucketIdx]) histogramCounts[bucketIdx]!.count++;
+
+    // Lever 2: Regime tracking
+    if (result.regime === "RANGING") regimeStats.rangingCandles++;
+    else regimeStats.trendingCandles++;
+
     if (!firstScoreLogged) {
       firstScoreLogged = true;
-      console.log(`[BT] First valid score at i=${i}: total=${result.total} direction=${result.direction} trend=${result.trendDirection} adx=${result.adx} rsi=${result.rsi} threshold=${scoreThreshold}`);
+      console.log(`[BT] First valid score at i=${i}: total=${result.total} direction=${result.direction} regime=${result.regime} trend=${result.trendDirection} adx=${result.adx} rsi=${result.rsi}`);
     }
     if (i % 500 === 0) {
-      console.log(`[BT] Score sample i=${i}: total=${result.total} dir=${result.direction} trend=${result.trendDirection} adx=${result.adx} rsi=${result.rsi}`);
+      console.log(`[BT] Score sample i=${i}: total=${result.total} dir=${result.direction} regime=${result.regime} adx=${result.adx} rsi=${result.rsi}`);
     }
 
     if (result.total < scoreThreshold) { scoreBelowThreshold++; continue; }
     if (result.direction === "NONE") {
       scoreDirectionNone++;
       if (scoreDirectionNone <= 5) {
-        console.log(`[BT] Direction=NONE at i=${i}: total=${result.total} adx=${result.adx} trend=${result.trendDirection} rsi=${result.rsi} band=${result.bandTouched}`);
+        console.log(`[BT] Direction=NONE at i=${i}: total=${result.total} regime=${result.regime} adx=${result.adx} rsi=${result.rsi} band=${result.bandTouched}`);
       }
       continue;
     }
@@ -471,45 +620,80 @@ export async function runDeterministicBacktest(
     if (stake <= 0) continue;
 
     const atrVal = result.atrValue > 0 ? result.atrValue : candle.close * 0.001;
-    const slPrice = result.direction === "BUY"
-      ? candle.close - atrVal * slMulti
-      : candle.close + atrVal * slMulti;
-    const tpPrice = result.direction === "BUY"
-      ? candle.close + atrVal * tp2Multi
-      : candle.close - atrVal * tp2Multi;
 
-    console.log(`[BT] TRADE ENTRY i=${i} dir=${result.direction} score=${result.total} close=${candle.close} sl=${slPrice.toFixed(2)} tp=${tpPrice.toFixed(2)} stake=${stake}`);
+    const slDist = atrVal * slMulti;
+    const tp1Dist = atrVal * tp1Multi;
+    // Lever 2: Ranging mode uses tp1 as final TP (mean-reversion targets midline, smaller move)
+    const tp2Dist = result.regime === "RANGING" ? atrVal * tp1Multi : atrVal * tp2Multi;
+
+    const slPrice = result.direction === "BUY"
+      ? candle.close - slDist
+      : candle.close + slDist;
+    const tp1Price = result.direction === "BUY"
+      ? candle.close + tp1Dist
+      : candle.close - tp1Dist;
+    const tp2Price = result.direction === "BUY"
+      ? candle.close + tp2Dist
+      : candle.close - tp2Dist;
+
+    console.log(`[BT] TRADE ENTRY i=${i} dir=${result.direction} regime=${result.regime} score=${result.total} close=${candle.close} sl=${slPrice.toFixed(2)} tp1=${tp1Price.toFixed(2)} tp2=${tp2Price.toFixed(2)} stake=${stake}`);
 
     openTrade = {
       direction: result.direction,
       entryPrice: candle.close,
-      stake,
+      fullStake: stake,
       slPrice,
-      tpPrice,
+      tp1Price,
+      tp2Price,
       entryTime: candle.time,
       barsHeld: 0,
       scoreVal: result.total,
+      scoreBreakdown: { trend: result.trend, volatility: result.volatility, timing: result.timing, pullback: result.pullback, risk: result.risk },
+      regime: result.regime,
+      halfClosed: false,
+      halfPnlLocked: 0,
     };
     tradesToday++;
+
+    // Lever 2: Track regime of trade entry
+    if (result.regime === "RANGING") regimeStats.rangingTrades++;
+    else regimeStats.trendingTrades++;
   }
 
   console.log(`=== BACKTEST COMPLETE ===`);
   console.log(`Candles processed: ${raw5m.length - WARMUP}  Trades: ${tradeList.length}`);
-  console.log(`scoreNull=${scoreNullCount} belowThreshold=${scoreBelowThreshold} dirNone=${scoreDirectionNone} errors=${scoreErrors} dailyLimit=${tradeDailyLimit} consLoss=${tradeConsLossLimit}`);
+  console.log(`scoreNull=${scoreNullCount} belowThreshold=${scoreBelowThreshold} dirNone=${scoreDirectionNone} errors=${scoreErrors} dailyLimit=${tradeDailyLimit} consLoss=${tradeConsLossLimit} sessionFiltered=${sessionFiltered}`);
+  console.log(`Regime: trending=${regimeStats.trendingCandles} ranging=${regimeStats.rangingCandles} | trades: trending=${regimeStats.trendingTrades} ranging=${regimeStats.rangingTrades}`);
+  console.log(`Partial exits: tp1=${partialExitStats.tp1Hits} tp2=${partialExitStats.tp2Hits} be=${partialExitStats.beHits}`);
 
+  // Close any open trade at end of data
   if (openTrade) {
     const last = raw5m[raw5m.length - 1];
     if (last) {
+      const remainingStake = openTrade.halfClosed ? openTrade.fullStake * 0.5 : openTrade.fullStake;
       const inProfit = openTrade.direction === "BUY" ? last.close > openTrade.entryPrice : last.close < openTrade.entryPrice;
-      const pnl = inProfit
-        ? Math.round(openTrade.stake * 0.3 * 100) / 100
-        : -Math.round(openTrade.stake * 0.3 * 100) / 100;
-      balance = Math.round((balance + pnl) * 100) / 100;
-      tradeList.push({ pnl, duration: openTrade.barsHeld * 5, scoreVal: openTrade.scoreVal });
-      returns.push(pnl / startingBalance);
+      const closePnl = inProfit
+        ? Math.round(remainingStake * 0.3 * 100) / 100
+        : -Math.round(remainingStake * 0.3 * 100) / 100;
+      const totalTradePnl = Math.round((openTrade.halfPnlLocked + closePnl) * 100) / 100;
+      balance = Math.round((balance + closePnl) * 100) / 100;
+      tradeList.push({ pnl: totalTradePnl, duration: openTrade.barsHeld * 5, scoreVal: openTrade.scoreVal, scoreBreakdown: openTrade.scoreBreakdown });
+      returns.push(totalTradePnl / startingBalance);
       if (balance > peak) peak = balance;
       equityCurve.push({ index: tradeList.length - 1, value: balance });
     }
+  }
+
+  // ── Lever 5: Feature importance via Pearson correlation ──────────────────
+  const featureImportance: FeatureImportance = { trend: 0, volatility: 0, timing: 0, pullback: 0, risk: 0 };
+  if (tradeList.length >= 2) {
+    const outcomes = tradeList.map(t => t.pnl > 0 ? 1 : -1);
+    featureImportance.trend     = pearsonR(tradeList.map(t => t.scoreBreakdown.trend), outcomes);
+    featureImportance.volatility = pearsonR(tradeList.map(t => t.scoreBreakdown.volatility), outcomes);
+    featureImportance.timing    = pearsonR(tradeList.map(t => t.scoreBreakdown.timing), outcomes);
+    featureImportance.pullback  = pearsonR(tradeList.map(t => t.scoreBreakdown.pullback), outcomes);
+    featureImportance.risk      = pearsonR(tradeList.map(t => t.scoreBreakdown.risk), outcomes);
+    console.log(`[BT] Feature importance: trend=${featureImportance.trend} vol=${featureImportance.volatility} timing=${featureImportance.timing} pullback=${featureImportance.pullback} risk=${featureImportance.risk}`);
   }
 
   const wins = tradeList.filter(t => t.pnl > 0);
@@ -525,7 +709,7 @@ export async function runDeterministicBacktest(
     ? Math.round(tradeList.reduce((s, t) => s + t.duration, 0) / tradeList.length * 10) / 10
     : 0;
 
-  logger.info({ runId, trades: tradeList.length, winRate, totalPnl, hash: candleHash, dataSource }, "Backtest complete");
+  logger.info({ runId, trades: tradeList.length, winRate, totalPnl, hash: candleHash, dataSource, trendingTrades: regimeStats.trendingTrades, rangingTrades: regimeStats.rangingTrades }, "Backtest complete");
 
   return {
     runId,
@@ -545,5 +729,9 @@ export async function runDeterministicBacktest(
     candleHash,
     dataSource,
     cacheFile,
+    featureImportance,
+    regimeStats,
+    scoreHistogram: histogramCounts,
+    partialExitStats,
   };
 }

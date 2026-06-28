@@ -6,7 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { EquityPoint } from './equityPoint';
+import type { FeatureImportance } from './featureImportance';
 import type { IndicatorAccuracy } from './indicatorAccuracy';
+import type { PartialExitStats } from './partialExitStats';
+import type { RegimeStats } from './regimeStats';
+import type { ScoreHistogramBucket } from './scoreHistogramBucket';
 import type { ScoreRangeSummary } from './scoreRangeSummary';
 import type { SessionSummary } from './sessionSummary';
 
@@ -37,4 +41,8 @@ export interface BacktestResult {
   dataSource?: string;
   cacheFile?: string;
   createdAt?: number;
+  featureImportance?: FeatureImportance;
+  regimeStats?: RegimeStats;
+  scoreHistogram?: ScoreHistogramBucket[];
+  partialExitStats?: PartialExitStats;
 }
