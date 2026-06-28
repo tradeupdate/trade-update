@@ -1,0 +1,239 @@
+The strategy is now profitable and deterministic.
+Do not rebuild anything. Make these specific 
+targeted improvements based on the trade log 
+analysis.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 1 — BREAK EVEN ADJUSTMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Current: Move stop to break even when profit 
+reaches 1.0× stop distance.
+
+Problem: V75 frequently retraces exactly back 
+to entry after moving 1× stop distance before 
+continuing. This triggers break even stop 
+unnecessarily then price continues to TP2.
+
+Fix: Move stop to break even only when profit
+reaches 1.5× stop distance instead of 1.0×.
+
+Also add a break even buffer:
+Instead of moving stop exactly to entry price,
+move it to entry + 5 pips (for BUY)
+or entry - 5 pips (for SELL).
+This small buffer prevents the natural 
+bid/ask spread from stopping the trade out
+exactly at break even.
+
+Current code:
+if profitPips >= stopDistance:
+  stopLoss = entryPrice
+
+New code:
+const BUFFER_PIPS = 5
+if profitPips >= stopDistance * 1.5:
+  if direction === 'BUY':
+    stopLoss = entryPrice + BUFFER_PIPS
+  else:
+    stopLoss = entryPrice - BUFFER_PIPS
+  breakEvenMoved = true
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 2 — REMOVE 15M CONFIRMATION COMPONENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Feature Importance panel shows:
+1h Trend: +0.354 (strongly predictive)
+5m Entry: +0.079 (slightly predictive)
+15m Conf: -0.064 (slightly NEGATIVE)
+
+The 15m confirmation component is hurting 
+performance slightly. It is blocking some 
+good trades while letting bad ones through
+because its correlation with outcomes is 
+negative.
+
+Remove 15m as a mandatory hard filter.
+Keep it as a soft bonus only.
+
+New signal logic:
+
+HARD REQUIREMENTS (both must pass):
+1. 1h Trend score >= 6/10 in signal direction
+2. Total score >= 18/30
+
+SOFT BONUS (no longer blocks trades):
+3. 15m Confirmation: adds to score but 
+   does not veto the trade if low
+   If 15m confirms: add up to +5 bonus points
+   If 15m contradicts: subtract 2 points
+   (trade can still execute if 1h is strong)
+
+New scoring:
+C1: 1h Trend 0-10 (hard filter >= 6)
+C2: 15m Bonus 0-5 (soft, no veto)
+C3: 5m Entry 0-10 (contributes to score)
+Total: 0-25
+Threshold: 16/25
+
+This means a trade with perfect 1h trend (10)
+and good 5m entry (8) scores 18/25 and can
+execute even if 15m is mixed (score 0 from C2).
+
+But a trade with weak 1h trend (4) cannot 
+execute regardless of other scores.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 3 — IMPROVE TP2 CAPTURE RATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Trades 3 and 4 hit TIME stop but were 
+profitable (+$44, +$45). This means the 
+trade was going in the right direction but 
+the 30 minute time stop closed it before 
+TP2 was reached.
+
+Extend time stop from 30 minutes to 45 minutes
+for trades that are in profit at the 30 minute
+mark.
+
+Logic:
+At 30 minutes:
+  if trade is in profit (price better than entry):
+    extend time stop to 45 minutes
+    log: "Time extended — trade in profit"
+  if trade is at break even or loss:
+    close immediately at 30 minutes
+
+This keeps winning trades alive longer while
+still cutting losers quickly at 30 minutes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 4 — SCORE THRESHOLD REFINEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Looking at the trade log scores:
+
+Losing trades: 22, 25, 22, 25, 28, 30, 28, 28
+Winning trades: 27, 25, 27, 20, 21, 26, 27, 25, 28
+
+Score 30 lost (trade 5 and 13)
+Score 20 won (trade 6)
+Score 27 both won and lost
+
+Score alone is not sufficient to predict 
+outcome which confirms our 3-component approach
+is right but needs refinement.
+
+Add one additional filter:
+
+TREND STRENGTH FILTER:
+Before executing any trade, check the 
+last 3 closed 1h candles.
+
+Count how many are in the trade direction:
+For BUY: count candles where close > open
+For SELL: count candles where close < open
+
+If 2 or more of last 3 candles are in 
+trade direction: PROCEED
+If fewer than 2: add warning, reduce score by 3
+
+This ensures we only trade when the hourly
+momentum has been consistent, not just a 
+single candle pointing our way.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 5 — INCREASE TRADE FREQUENCY SLIGHTLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+18 trades over 6 months (Dec-Jun) is only
+3 trades per month. That is too few for 
+meaningful account growth even with good WR.
+
+We need 3-5 trades per week minimum to 
+grow a $5,000 account meaningfully.
+
+Reduce the threshold slightly:
+Old threshold: 20/30
+New threshold: 16/25 (after component change)
+
+Also reduce the cooldown between trades:
+Old: 10 minutes
+New: 5 minutes
+
+And increase max trades per day:
+Old: 4 per day
+New: 6 per day
+
+Max per session stays at 2 to prevent 
+overtrading in any single session.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 6 — BETTER P&L CALCULATION FOR TIME STOPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Trades 3 and 4 closed on Time stop but 
+showed profit (+$44, +$45). This is correct
+behavior but the amount seems high for a 
+time stop exit.
+
+Verify time stop P&L calculates correctly:
+
+When closing on time stop:
+Get current price at time of close
+Calculate pips from entry to current price
+
+If in profit:
+  pnl = stake × 0.85 × (profitPips / stopDistance)
+  Cap at stake × 0.85 (cannot exceed full win)
+
+If at loss:
+  pnl = -(stake × lossRatio)
+  Where lossRatio = lossPips / stopDistance
+  Cap at -stake (cannot exceed full loss)
+
+This gives a proportional P&L based on 
+how far price moved toward the target.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RERUN BACKTEST AFTER FIXES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Run backtest on same period: Dec 31 - Jun 27
+Account: Clean10test ($5,000)
+Strategy: V75 Sniper (updated)
+
+Expected improvements:
+- More trades: target 40-80 over 6 months
+- Win rate: target 55-62% (up from 50%)
+- Total P&L: target +$200 to +$500
+- Fewer break even stops that reverse to wins
+- Better capture of TP2 on winning trades
+
+Target metrics after this fix:
+Win rate: 55%+
+Profit factor: 1.3+
+Total P&L: positive and growing
+Max drawdown: below 15%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+☐ Break even now triggers at 1.5× not 1.0×
+☐ Break even has 5 pip buffer not exact entry
+☐ 15m no longer hard blocks trades
+☐ 15m adds bonus points only
+☐ Time stop extends to 45min if in profit
+☐ Time stop still 30min if at loss
+☐ Last 3 hourly candles filter implemented
+☐ Threshold is 16/25
+☐ Cooldown is 5 minutes
+☐ Max 6 trades per day
+☐ Backtest runs and produces 40+ trades
+☐ Win rate above 55%
+☐ Profit factor above 1.3
+☐ Total P&L positive and larger than +$99
+☐ Feature importance still shows 1h highest
