@@ -16,9 +16,9 @@ async function seed() {
 
   // Trading profiles
   const profiles = [
-    { profile: "safe", minBalance: 1000, maxRiskPercent: 1.0, maxTradesDay: 4, scoreThreshold: 40, consecutiveLossStop: 2, maxTradesHour: 2, sessionsEnabled: JSON.stringify(["London/NY Overlap", "London Open"]) },
-    { profile: "pro", minBalance: 3000, maxRiskPercent: 1.5, maxTradesDay: 6, scoreThreshold: 38, consecutiveLossStop: 3, maxTradesHour: 3, sessionsEnabled: JSON.stringify(["London/NY Overlap", "London Open", "NY Afternoon"]) },
-    { profile: "aggressive", minBalance: 5000, maxRiskPercent: 2.0, maxTradesDay: 8, scoreThreshold: 36, consecutiveLossStop: 4, maxTradesHour: 4, sessionsEnabled: "[]" },
+    { profile: "safe", minBalance: 1000, maxRiskPercent: 1.0, maxTradesDay: 6, scoreThreshold: 16, consecutiveLossStop: 2, maxTradesHour: 2, sessionsEnabled: JSON.stringify(["London/NY Overlap", "London Open"]) },
+    { profile: "pro", minBalance: 3000, maxRiskPercent: 1.5, maxTradesDay: 6, scoreThreshold: 16, consecutiveLossStop: 3, maxTradesHour: 3, sessionsEnabled: JSON.stringify(["London/NY Overlap", "London Open", "NY Afternoon"]) },
+    { profile: "aggressive", minBalance: 5000, maxRiskPercent: 2.0, maxTradesDay: 8, scoreThreshold: 16, consecutiveLossStop: 4, maxTradesHour: 4, sessionsEnabled: "[]" },
   ];
 
   for (const p of profiles) {
@@ -34,7 +34,7 @@ async function seed() {
       description: "High-precision scalping on 1m with 5m confirmation. Targets institutional order blocks at key levels.",
       status: "active", entryTimeframe: "1m", signalTimeframe: "5m", trendTimeframe: "15m",
       sessionsEnabled: JSON.stringify(["London/NY Overlap", "London Open"]),
-      scoreThreshold: 40, maxTradesDay: 4, maxRiskPercent: 1.0,
+      scoreThreshold: 16, maxTradesDay: 6, maxRiskPercent: 1.0,
       stopMultiplier: 1.5, tp1Multiplier: 1.5, tp2Multiplier: 3.0,
       momentumExtensionEnabled: 1, spikeFilterEnabled: 1, spikeFilterMultiplier: 3.0,
       consolidationDetection: 1, firstCandleRule: 1,
@@ -45,7 +45,7 @@ async function seed() {
       description: "Multi-session swing trades on 5m+15m trend alignment. Higher R:R, fewer entries.",
       status: "active", entryTimeframe: "5m", signalTimeframe: "15m", trendTimeframe: "15m",
       sessionsEnabled: JSON.stringify(["London/NY Overlap", "London Open", "NY Afternoon"]),
-      scoreThreshold: 38, maxTradesDay: 3, maxRiskPercent: 1.5,
+      scoreThreshold: 16, maxTradesDay: 6, maxRiskPercent: 1.5,
       stopMultiplier: 2.0, tp1Multiplier: 2.0, tp2Multiplier: 4.0,
       momentumExtensionEnabled: 1, spikeFilterEnabled: 1, spikeFilterMultiplier: 2.5,
       consolidationDetection: 1, firstCandleRule: 0,
@@ -56,7 +56,7 @@ async function seed() {
       description: "Counter-trend entries at extreme RSI/BB with SMC confluence. High score threshold.",
       status: "active", entryTimeframe: "1m", signalTimeframe: "5m", trendTimeframe: "15m",
       sessionsEnabled: JSON.stringify(["London/NY Overlap"]),
-      scoreThreshold: 44, maxTradesDay: 2, maxRiskPercent: 1.0,
+      scoreThreshold: 16, maxTradesDay: 6, maxRiskPercent: 1.0,
       stopMultiplier: 1.2, tp1Multiplier: 2.0, tp2Multiplier: 4.0,
       counterTrendEnabled: 1, counterTrendRsiThreshold: 78, counterTrendBbSigma: 2.5,
       momentumExtensionEnabled: 1, spikeFilterEnabled: 1, spikeFilterMultiplier: 3.5,

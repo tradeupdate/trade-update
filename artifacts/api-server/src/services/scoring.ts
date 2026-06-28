@@ -1,9 +1,9 @@
 import type { Candle } from "./deriv.js";
 
 export interface ScoreResult {
-  total: number;        // 0-30
-  c1: number;           // 1h trend 0-10
-  c2: number;           // 15m confirmation 0-10
+  total: number;        // 0-25 (c1 0-10 + c2 -2..5 + c3 0-10)
+  c1: number;           // 1h trend 0-10 (hard filter: must be >= 6)
+  c2: number;           // 15m bonus: +0..5 if confirms, -2 if contradicts (soft, no veto)
   c3: number;           // 5m entry timing 0-10
   direction: "BUY" | "SELL" | "NONE";
   atrValue: number;     // ATR(14) on 5m for SL/TP calculation
@@ -118,7 +118,7 @@ function calcADX(candles: Candle[], period: number): number {
   return dxVals.slice(-period).reduce((s, v) => s + v, 0) / period;
 }
 
-// ── Component 1: 1h trend alignment (0-10) ────────────────────────────────────
+// ── Component 1: 1h trend alignment (0-10) — hard filter, must be >= 6 ────────
 
 function score1hTrend(
   candles1h: Candle[],
@@ -150,7 +150,7 @@ function score1hTrend(
   }
 }
 
-// ── Component 2: 15m confirmation (0-10) ─────────────────────────────────────
+// ── Component 2: 15m soft bonus (−2 to +5) — no longer vetoes trades ─────────
 
 function score15mConfirmation(
   candles15m: Candle[],
@@ -218,6 +218,10 @@ function score5mEntry(
 }
 
 // ── Main score function ────────────────────────────────────────────────────────
+// Scoring: C1 (0-10, hard ≥6) + C2 (-2..+5 soft) + C3 (0-10) = 0-25
+// Hard requirements: C1 >= 6 (1h trend must be aligned)
+// Soft: C2 adds bonus if 15m confirms (+0-5), penalises if contradicts (-2)
+// Threshold: 16/25
 // Requires: ≥55 1h candles, ≥25 15m candles, ≥50 5m candles.
 // Returns null when insufficient data.
 
@@ -238,20 +242,23 @@ export function score(
   // 1h conditions are mutually exclusive: EMA20>EMA50 means BUY passes, SELL fails
   for (const dir of ["BUY", "SELL"] as const) {
     const t1 = score1hTrend(candles1h, dir);
-    if (t1.pts === 0) continue;
+    if (t1.pts === 0) continue; // 1h hard filter: EMA20/50 must be aligned (returns 6-10 or 0)
 
+    // 15m is now a SOFT bonus only — does not veto the trade
     const t2 = score15mConfirmation(candles15m, dir);
-    if (t2.pts === 0) continue;
+    const c2Bonus = t2.pts > 0
+      ? Math.min(5, Math.round(t2.pts / 2))   // confirms: +0 to +5
+      : -2;                                     // contradicts: -2 penalty
 
     const t3 = score5mEntry(candles5m, dir);
-    const total = t1.pts + t2.pts + t3.pts;
+    const total = t1.pts + c2Bonus + t3.pts;   // max 10 + 5 + 10 = 25
 
     return {
       total,
       c1: t1.pts,
-      c2: t2.pts,
+      c2: c2Bonus,
       c3: t3.pts,
-      direction: total >= 20 ? dir : "NONE",
+      direction: total >= 16 ? dir : "NONE",
       atrValue,
       ready: true,
       ema20_1h: t1.ema20,
@@ -265,7 +272,7 @@ export function score(
     };
   }
 
-  // Neither direction has aligned 1h+15m — return NONE with diagnostics
+  // Neither direction has an aligned 1h trend — return NONE with diagnostics
   const t1d = score1hTrend(candles1h, "BUY");
   const t2d = score15mConfirmation(candles15m, "BUY");
   const t3d = score5mEntry(candles5m, "BUY");

@@ -359,16 +359,16 @@ function pearsonR(x: number[], y: number[]): number {
   return denom === 0 ? 0 : Math.round((num / denom) * 1000) / 1000;
 }
 
-// ─── Score Histogram (0-30 range, threshold=20) ───────────────────────────────
+// ─── Score Histogram (0-25 range, threshold=16) ───────────────────────────────
 
 const HISTOGRAM_BUCKETS = [
-  { label: "<12",   min: -Infinity, max: 12 },
-  { label: "12-16", min: 12, max: 16 },
+  { label: "<10",   min: -Infinity, max: 10 },
+  { label: "10-13", min: 10, max: 13 },
+  { label: "13-16", min: 13, max: 16 },
   { label: "16-18", min: 16, max: 18 },
   { label: "18-20", min: 18, max: 20 },
   { label: "20-22", min: 20, max: 22 },
-  { label: "22-25", min: 22, max: 25 },
-  { label: "25+",   min: 25, max: Infinity },
+  { label: "22+",   min: 22, max: Infinity },
 ];
 
 function getHistogramBucket(scoreVal: number): number {
@@ -413,10 +413,16 @@ export async function runDeterministicBacktest(
 
   // WARMUP: need ≥55 1h candles = 660 5m bars before scoring starts
   const WARMUP = 660;
-  // MAX_HOLD_BARS: 30-minute time stop = 6 × 5m bars
+  // MAX_HOLD_BARS: 30-min base time stop = 6 × 5m bars
   const MAX_HOLD_BARS = 6;
+  // EXTENDED_HOLD_BARS: 45-min extended time stop = 9 × 5m bars (if in profit at 30min)
+  const EXTENDED_HOLD_BARS = 9;
   // Max stop-loss distance; reject if ATR × slMulti exceeds this
   const MAX_STOP_DIST = 120;
+  // BE buffer: pips above/below entry when moving stop to break even
+  const BUFFER_PIPS = 5;
+  // Cooldown between trades: 5 minutes
+  const COOLDOWN_SECS = 300;
 
   interface OpenTrade {
     direction: "BUY" | "SELL";
@@ -432,6 +438,8 @@ export async function runDeterministicBacktest(
     scoreBreakdown: { c1: number; c2: number; c3: number };
     halfClosed: boolean;
     halfPnlLocked: number;
+    beTriggered: boolean;   // true once SL moved to entry+buffer at 1.5× stop
+    timeExtended: boolean;  // true if 30-min extension granted (trade was in profit)
   }
 
   const tradeList: TradeDetail[] = [];
@@ -446,6 +454,7 @@ export async function runDeterministicBacktest(
   let dailyPnl = 0;
   let tradesToday = 0;
   let lastDayTs = 0;
+  let lastTradeExitTime = 0; // unix seconds — cooldown tracking
 
   let scoreNullCount = 0;
   let scoreBelowThreshold = 0;
@@ -505,9 +514,9 @@ export async function runDeterministicBacktest(
           if (balance > peak) peak = balance;
           openTrade.halfClosed = true;
           openTrade.halfPnlLocked = halfPnl;
-          openTrade.slPrice = openTrade.entryPrice;
+          // FIX 1: Do NOT move SL to entry at TP1 — wait for 1.5× stop distance
           partialExitStats.tp1Hits++;
-          console.log(`[BT] TP1 partial exit i=${i} dir=${openTrade.direction} halfPnl=+${halfPnl} slMovedToBE=${openTrade.entryPrice.toFixed(2)}`);
+          console.log(`[BT] TP1 partial exit i=${i} dir=${openTrade.direction} halfPnl=+${halfPnl} SL stays at ${openTrade.slPrice.toFixed(2)} (BE moves at 1.5× stop)`);
         } else if (slHit) {
           closePnl = -openTrade.fullStake;
           closed = true;
@@ -515,6 +524,21 @@ export async function runDeterministicBacktest(
           closeReason = "sl";
         }
       } else {
+        // FIX 1: Check if price has reached 1.5× stop distance → trigger BE with buffer
+        if (!openTrade.beTriggered) {
+          const stopDist = Math.abs(openTrade.entryPrice - openTrade.originalSlPrice);
+          const maxProfitPips = openTrade.direction === "BUY"
+            ? candle.high - openTrade.entryPrice
+            : openTrade.entryPrice - candle.low;
+          if (stopDist > 0 && maxProfitPips >= stopDist * 1.5) {
+            openTrade.beTriggered = true;
+            openTrade.slPrice = openTrade.direction === "BUY"
+              ? openTrade.entryPrice + BUFFER_PIPS
+              : openTrade.entryPrice - BUFFER_PIPS;
+            console.log(`[BT] BE triggered at 1.5× stop i=${i} newSL=${openTrade.slPrice.toFixed(2)}`);
+          }
+        }
+
         const tp2Hit = openTrade.direction === "BUY"
           ? candle.high >= openTrade.tp2Price
           : candle.low <= openTrade.tp2Price;
@@ -530,25 +554,65 @@ export async function runDeterministicBacktest(
           closeReason = "tp2";
           partialExitStats.tp2Hits++;
         } else if (slHit) {
-          closePnl = 0;
+          if (openTrade.beTriggered) {
+            // Stopped at break even (SL near entry with buffer)
+            closePnl = 0;
+            closeReason = "breakeven";
+            partialExitStats.beHits++;
+          } else {
+            // SL still at original — second half loss
+            closePnl = -Math.round(openTrade.fullStake * 0.5 * 100) / 100;
+            closeReason = "sl";
+          }
           closed = true;
-          exitPrice = openTrade.entryPrice;
-          closeReason = "breakeven";
-          partialExitStats.beHits++;
+          exitPrice = openTrade.slPrice;
         }
       }
 
+      // FIX 3 & FIX 6: Time stop with extension and proportional P&L
       if (!closed && openTrade.barsHeld >= MAX_HOLD_BARS) {
-        const remainingStake = openTrade.halfClosed ? openTrade.fullStake * 0.5 : openTrade.fullStake;
         const inProfit = openTrade.direction === "BUY"
           ? candle.close > openTrade.entryPrice
           : candle.close < openTrade.entryPrice;
-        closePnl = inProfit
-          ? Math.round(remainingStake * 0.3 * 100) / 100
-          : -Math.round(remainingStake * 0.3 * 100) / 100;
-        closed = true;
-        exitPrice = candle.close;
-        closeReason = "time_stop";
+
+        if (!openTrade.timeExtended && openTrade.barsHeld === MAX_HOLD_BARS) {
+          // 30-minute decision point
+          if (inProfit) {
+            openTrade.timeExtended = true;
+            console.log(`[BT] Time extended — trade in profit at 30min i=${i} price=${candle.close}`);
+            // Don't close — let barsHeld increment below
+          } else {
+            // Close at 30min (loss/flat) with proportional P&L
+            const remainingStake = openTrade.halfClosed ? openTrade.fullStake * 0.5 : openTrade.fullStake;
+            const stopDist = Math.abs(openTrade.entryPrice - openTrade.originalSlPrice);
+            const lossPips = Math.abs(candle.close - openTrade.entryPrice);
+            closePnl = stopDist > 0
+              ? Math.round(Math.max(-remainingStake, -remainingStake * Math.min(1, lossPips / stopDist)) * 100) / 100
+              : -Math.round(remainingStake * 0.3 * 100) / 100;
+            closed = true;
+            exitPrice = candle.close;
+            closeReason = "time_stop";
+          }
+        } else if (openTrade.barsHeld >= EXTENDED_HOLD_BARS) {
+          // 45-minute close (FIX 3 extended) or fallback over-hold
+          const remainingStake = openTrade.halfClosed ? openTrade.fullStake * 0.5 : openTrade.fullStake;
+          const stopDist = Math.abs(openTrade.entryPrice - openTrade.originalSlPrice);
+          const profitPips = openTrade.direction === "BUY"
+            ? candle.close - openTrade.entryPrice
+            : openTrade.entryPrice - candle.close;
+          if (inProfit && stopDist > 0) {
+            // FIX 6: proportional P&L capped at 0.85× stake
+            closePnl = Math.round(Math.min(remainingStake * 0.85, remainingStake * 0.85 * (profitPips / stopDist)) * 100) / 100;
+          } else if (!inProfit && stopDist > 0) {
+            const lossPips = Math.abs(profitPips);
+            closePnl = Math.round(Math.max(-remainingStake, -remainingStake * (lossPips / stopDist)) * 100) / 100;
+          } else {
+            closePnl = 0;
+          }
+          closed = true;
+          exitPrice = candle.close;
+          closeReason = "time_stop";
+        }
       }
 
       if (closed) {
@@ -589,6 +653,7 @@ export async function runDeterministicBacktest(
         }
 
         console.log(`[BT] TRADE CLOSE i=${i} reason=${closeReason} pnl=${totalTradePnl} balance=${balance}`);
+        lastTradeExitTime = candle.time; // FIX 5: reset cooldown timer
         openTrade = null;
       } else {
         openTrade.barsHeld++;
@@ -610,6 +675,8 @@ export async function runDeterministicBacktest(
     if (tradesToday >= maxTradesDay) { tradeDailyLimit++; continue; }
     if (consLosses >= consecutiveLossStop) { tradeConsLossLimit++; continue; }
     if (dailyPnl <= -(balance * 0.05)) continue;
+    // FIX 5: 5-minute cooldown between trades
+    if (candle.time - lastTradeExitTime < COOLDOWN_SECS) continue;
 
     // ── Build scoring windows ──────────────────────────────────────────────
     const window5m  = raw5m.slice(Math.max(0, i - 49), i + 1);
@@ -652,6 +719,21 @@ export async function runDeterministicBacktest(
     if (result.total < scoreThreshold) { scoreBelowThreshold++; continue; }
     if (result.direction === "NONE") { scoreDirectionNone++; continue; }
 
+    // FIX 4: Trend strength filter — last 3 closed 1h candles must have ≥2 aligned
+    const last3h = all1h.filter(c => c.time < candle.time).slice(-3);
+    if (last3h.length >= 3) {
+      const alignedCount = result.direction === "BUY"
+        ? last3h.filter(c => c.close > c.open).length
+        : last3h.filter(c => c.close < c.open).length;
+      if (alignedCount < 2) {
+        const adjustedScore = result.total - 3;
+        if (i % 200 === 0 || adjustedScore < scoreThreshold) {
+          console.log(`[BT] Trend filter: ${alignedCount}/3 1h candles aligned, score ${result.total}→${adjustedScore} dir=${result.direction}`);
+        }
+        if (adjustedScore < scoreThreshold) { scoreBelowThreshold++; continue; }
+      }
+    }
+
     const stake = Math.round(balance * (maxRiskPercent / 100) * 100) / 100;
     if (stake <= 0) continue;
 
@@ -692,6 +774,8 @@ export async function runDeterministicBacktest(
       scoreBreakdown: { c1: result.c1, c2: result.c2, c3: result.c3 },
       halfClosed: false,
       halfPnlLocked: 0,
+      beTriggered: false,
+      timeExtended: false,
     };
     tradesToday++;
   }

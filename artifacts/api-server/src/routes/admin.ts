@@ -409,7 +409,7 @@ router.post("/backtest/run", async (req, res) => {
 
     const { sessionFilterEnabled, sessionStartHour, sessionEndHour } = req.body;
     const config = {
-      scoreThreshold: strategy.scoreThreshold ?? 38,
+      scoreThreshold: strategy.scoreThreshold ?? 16,
       maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
       stopMultiplier: strategy.stopMultiplier ?? 1.5,
       tp1Multiplier: strategy.tp1Multiplier ?? 2.0,

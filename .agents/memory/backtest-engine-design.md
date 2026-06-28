@@ -33,7 +33,19 @@ Total trade PnL = halfPnlLocked + closePnl. Both added to tradeList at close.
 - tp2Multiplier: 3.0
 - stopMultiplier: 1.5
 - sessionFilter: enabled, 06:00–20:00 UTC
-- scoreThreshold: 38 (from strategy DB)
+- scoreThreshold: **16** (DB + seed + admin-route default all updated — old 38–44 caused 0 trades since max score is 25)
+- maxTradesDay: **6** (updated across DB, seed, all strategies)
+
+## Six improvement fixes (backtest-engine.ts)
+
+1. **BE at 1.5× stop** — SL does NOT move to entry at TP1. After TP1, `beTriggered` fires when price reaches 1.5× stop distance → SL moves to entry + BUFFER_PIPS (5 pips).
+2. **15m soft scoring** — C2 layer is −2 to +5 bonus, not a hard veto. Threshold is 16/25.
+3. **30-min time-stop extension** — at MAX_HOLD_BARS (30min), if in profit → set `timeExtended=true`, hold to EXTENDED_HOLD_BARS (45min). If not in profit → close with proportional P&L.
+4. **Trend filter** — last 3 closed 1h candles checked; if <2 aligned with trade direction → deduct 3 from score. If adjusted score < threshold, skip.
+5. **5-min cooldown** — `candle.time - lastTradeExitTime < COOLDOWN_SECS (300)` blocks re-entry immediately after a close.
+6. **Proportional P&L** — time-stop exits calculate `profitPips / stopDist` ratio (capped at ±fullStake) instead of flat 0.3× multiplier.
+
+**Why:** These combine to produce realistic trade simulation: BE protects late runners, cooldown prevents overtrading, trend filter reduces counter-trend entries, proportional P&L avoids phantom win/loss inflation.
 
 ## Feature importance
 
