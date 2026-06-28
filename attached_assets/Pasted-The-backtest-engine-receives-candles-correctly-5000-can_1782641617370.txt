@@ -1,0 +1,577 @@
+The backtest engine receives candles correctly
+(5000 candles confirmed by hash) but executes
+zero trades across all strategies and all 
+date ranges. Fix this completely.
+
+The problem is somewhere between receiving 
+candles and executing the first trade.
+Work through each diagnostic step in order
+and fix every issue found.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — ADD VISIBLE DIAGNOSTIC LOGGING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before fixing anything, add logs that show
+exactly where the backtest stops working.
+
+In the backtest replay loop, add these logs
+at every decision point:
+
+// LOG 1: Confirm loop is starting
+console.log(`=== BACKTEST STARTING ===`)
+console.log(`Total 5m candles to process: ${candles5m.length}`)
+console.log(`Total 15m candles available: ${candles15m.length}`)
+console.log(`Date range: ${new Date(candles5m[0].time*1000).toISOString()} 
+to ${new Date(candles5m[candles5m.length-1].time*1000).toISOString()}`)
+
+// LOG 2: First candle being processed
+console.log(`First candle: time=${candles5m[0].time} 
+close=${candles5m[0].close}`)
+
+// LOG 3: Inside the loop, log every 100th candle
+if (i % 100 === 0) {
+  console.log(`Processing candle ${i}/${candles5m.length} 
+  time=${new Date(candle.time*1000).toISOString()}
+  close=${candle.close}`)
+}
+
+// LOG 4: Session check result
+const inSession = isInActiveSession(candle.time)
+if (i < 10 || i % 200 === 0) {
+  const hour = new Date(candle.time * 1000).getUTCHours()
+  console.log(`Candle ${i}: UTC hour=${hour} 
+  inSession=${inSession}`)
+}
+
+// LOG 5: Count session rejections
+let sessionRejections = 0
+let totalCandles = 0
+// At end of loop: log totals
+console.log(`Session rejections: ${sessionRejections}/${totalCandles}`)
+
+// LOG 6: Minimum candle check
+if (available5m.length < 50) {
+  if (i < 5) console.log(`Skipping: only ${available5m.length} 
+  candles available, need 50`)
+  continue
+}
+
+// LOG 7: Score result - LOG EVERY SINGLE ONE
+// until we see the first score > 0
+if (totalScored < 20) {
+  console.log(`Score result ${totalScored}: 
+  total=${scores.total} 
+  signal=${scores.signal}
+  trend=${scores.scoreTrend}
+  vol=${scores.scoreVolatility}
+  timing=${scores.scoreTiming}
+  pullback=${scores.scorePullback}
+  risk=${scores.scoreRisk}`)
+  totalScored++
+}
+
+// LOG 8: Trade execution attempt
+console.log(`ATTEMPTING TRADE: score=${scores.total} 
+threshold=${threshold} 
+signal=${scores.signal}
+PASSES: ${scores.total >= threshold && scores.signal !== 'NONE'}`)
+
+// LOG 9: Final summary before returning
+console.log(`=== BACKTEST COMPLETE ===`)
+console.log(`Candles processed: ${totalCandles}`)
+console.log(`Session rejections: ${sessionRejections}`)
+console.log(`Insufficient data skips: ${dataSkips}`)
+console.log(`Score evaluations: ${totalScored}`)
+console.log(`Trades executed: ${allTrades.length}`)
+
+Run the backtest once after adding these logs.
+The output will show exactly where trades 
+are being blocked.
+Send me what the logs show OR continue with
+the fixes below which address all possible causes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — FIX SESSION FILTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The session filter is the most likely cause.
+It may be using wrong timezone or wrong logic.
+
+Replace the entire session check function:
+
+function isInActiveSession(unixTimestampSeconds: number): boolean {
+  // Convert to UTC hour
+  const date = new Date(unixTimestampSeconds * 1000)
+  const utcHour = date.getUTCHours()
+  const utcMinutes = date.getUTCMinutes()
+  const utcDecimalHour = utcHour + (utcMinutes / 60)
+
+  // Asian session: 00:00 - 03:00 UTC
+  const asian = utcDecimalHour >= 0 && utcDecimalHour < 3
+
+  // London Open: 07:00 - 10:00 UTC
+  const london = utcDecimalHour >= 7 && utcDecimalHour < 10
+
+  // London/NY Overlap: 12:00 - 16:00 UTC
+  const overlap = utcDecimalHour >= 12 && utcDecimalHour < 16
+
+  // NY Afternoon: 13:00 - 17:00 UTC
+  const ny = utcDecimalHour >= 13 && utcDecimalHour < 17
+
+  const result = asian || london || overlap || ny
+
+  return result
+}
+
+CRITICAL: The candle time field must be in
+UNIX SECONDS not milliseconds.
+
+Add this validation:
+function validateCandleTime(time: number): number {
+  // If time is in milliseconds (13 digits), convert to seconds
+  if (time > 9999999999) {
+    return Math.floor(time / 1000)
+  }
+  // Already in seconds (10 digits)
+  return time
+}
+
+Apply to every candle before session check:
+const candleTime = validateCandleTime(candle.time)
+const inSession = isInActiveSession(candleTime)
+
+Test: for a candle with time=1750000000
+new Date(1750000000 * 1000) = 
+Wednesday June 15 2025 ~14:00 UTC
+This SHOULD be in session (overlap 12-16)
+Log this to confirm.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — FIX MINIMUM CANDLE REQUIREMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The minimum candle check may be too strict
+or calculating incorrectly.
+
+Current code likely does:
+const available5m = candles5m.filter(c => c.time <= candle.time)
+if (available5m.length < 50) continue
+
+This filter runs for every candle which is
+extremely slow AND may be wrong if times
+don't match exactly.
+
+Replace with index-based approach:
+
+// Pre-process: candles are already sorted
+// Use index directly - no filter needed
+for (let i = 0; i < candles5m.length; i++) {
+  const candle = candles5m[i]
+  
+  // Need at least 50 previous candles for indicators
+  if (i < 50) {
+    dataSkips++
+    continue
+  }
+  
+  // Use slice instead of filter - much faster and reliable
+  const available5m = candles5m.slice(0, i + 1)
+  const available15m = candles15m.filter(
+    c => c.time <= candle.time
+  ).slice(-100)
+  
+  // Ensure minimum data for 15m too
+  if (available15m.length < 20) {
+    dataSkips++
+    continue
+  }
+  
+  // Continue with scoring...
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 4 — FIX SCORING ENGINE CALL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The scoring engine may not be returning
+a usable result. It might be throwing 
+an error silently or returning undefined.
+
+Wrap the entire scoring call in try/catch:
+
+let scores: ScoreResult
+try {
+  scores = scoringEngine.evaluate({
+    candles5m: available5m,
+    candles15m: available15m,
+    currentPrice: candle.close,
+    balance: runningBalance,
+    consecutiveLosses: state.consecutiveLosses,
+    todayTrades: state.todayTrades,
+    profile: 'safe'
+  })
+} catch (error) {
+  console.error(`Scoring engine error at candle ${i}:`, error)
+  scoreErrors++
+  continue
+}
+
+// Validate scores object
+if (!scores) {
+  console.error(`Scoring engine returned null/undefined at ${i}`)
+  continue
+}
+
+if (typeof scores.total !== 'number' || isNaN(scores.total)) {
+  console.error(`Invalid score total: ${scores.total} at ${i}`)
+  continue
+}
+
+if (!scores.signal || !['BUY','SELL','NONE'].includes(scores.signal)) {
+  console.error(`Invalid signal: ${scores.signal} at ${i}`)
+  // Default to NONE instead of crashing
+  scores.signal = 'NONE'
+}
+
+console.log(`Score at candle ${i}: ${scores.total}/${maxScore} 
+signal=${scores.signal}`)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 5 — FIX INDICATOR CALCULATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The indicators may be returning NaN or 
+undefined causing the entire score to be 0
+or the signal to always be NONE.
+
+Add validation to every indicator:
+
+// EMA validation
+function safeEMA(candles: Candle[], period: number): number {
+  if (!candles || candles.length < period) {
+    return candles?.[candles.length - 1]?.close || 0
+  }
+  const closes = candles.map(c => c.close)
+  if (closes.some(v => isNaN(v) || v <= 0)) {
+    console.warn(`Invalid closes in EMA calculation`)
+    return closes[closes.length - 1] || 0
+  }
+  const k = 2 / (period + 1)
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k)
+  }
+  if (isNaN(ema)) {
+    console.warn(`EMA${period} resulted in NaN`)
+    return closes[closes.length - 1]
+  }
+  return ema
+}
+
+// RSI validation
+function safeRSI(candles: Candle[], period: number = 14): number {
+  if (!candles || candles.length < period + 1) return 50
+  
+  const closes = candles.map(c => c.close)
+  let gains = 0, losses = 0
+  
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1]
+    if (diff > 0) gains += diff
+    else losses += Math.abs(diff)
+  }
+  
+  if (gains === 0 && losses === 0) return 50
+  
+  let avgGain = gains / period
+  let avgLoss = losses / period
+  
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1]
+    avgGain = (avgGain * (period - 1) + Math.max(0, diff)) / period
+    avgLoss = (avgLoss * (period - 1) + Math.max(0, -diff)) / period
+  }
+  
+  if (avgLoss === 0) return 100
+  const rs = avgGain / avgLoss
+  const rsi = 100 - (100 / (1 + rs))
+  
+  if (isNaN(rsi)) return 50
+  return Math.max(0, Math.min(100, rsi))
+}
+
+// ATR validation
+function safeATR(candles: Candle[], period: number = 14): number {
+  if (!candles || candles.length < 2) return 100 // default 100 pips
+  
+  const trs: number[] = []
+  for (let i = 1; i < candles.length; i++) {
+    const tr = Math.max(
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - candles[i-1].close),
+      Math.abs(candles[i].low - candles[i-1].close)
+    )
+    if (!isNaN(tr) && tr >= 0) trs.push(tr)
+  }
+  
+  if (trs.length === 0) return 100
+  
+  const usePeriod = Math.min(period, trs.length)
+  let atr = trs.slice(0, usePeriod).reduce((a,b) => a+b, 0) / usePeriod
+  
+  const k = 2 / (usePeriod + 1)
+  for (let i = usePeriod; i < trs.length; i++) {
+    atr = trs[i] * k + atr * (1 - k)
+  }
+  
+  if (isNaN(atr) || atr <= 0) return 100
+  return atr
+}
+
+// Bollinger Bands validation
+function safeBB(candles: Candle[], period: number = 20, mult: number = 2) {
+  if (!candles || candles.length < period) {
+    const price = candles?.[candles.length-1]?.close || 39000
+    return { 
+      upper: price * 1.002, 
+      middle: price, 
+      lower: price * 0.998,
+      width: 0.4
+    }
+  }
+  
+  const closes = candles.slice(-period).map(c => c.close)
+  const sma = closes.reduce((a,b) => a+b, 0) / period
+  const variance = closes.reduce((sum, c) => 
+    sum + Math.pow(c - sma, 2), 0) / period
+  const std = Math.sqrt(variance)
+  
+  if (isNaN(sma) || isNaN(std)) {
+    const price = candles[candles.length-1].close
+    return { upper: price*1.002, middle: price, lower: price*0.998, width: 0.4 }
+  }
+  
+  return {
+    upper: sma + (mult * std),
+    middle: sma,
+    lower: sma - (mult * std),
+    width: ((mult * 2 * std) / sma) * 100
+  }
+}
+
+Replace all indicator calls in the scoring
+engine with these safe versions.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 6 — SIMPLIFY SIGNAL LOGIC TEMPORARILY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The signal direction rules we added in the
+previous fix are too strict. They are blocking
+every single trade. Simplify them:
+
+REMOVE these blocks entirely:
+- Mandatory minimum component requirements
+- Direction confidence check (price vs EMA21)
+- Candle pattern requirement (score >= 1)
+- All the extra veto conditions we added
+
+REPLACE with this simple clean logic:
+
+function determineSignal(
+  trendDirection: string,
+  marketMode: string,
+  rsi: number,
+  scores: ComponentScores,
+  totalScore: number,
+  threshold: number
+): "BUY" | "SELL" | "NONE" {
+
+  // Must meet minimum score threshold
+  if (totalScore < threshold) return "NONE"
+
+  if (marketMode === "TRENDING" || marketMode === "MIXED") {
+    // In trending mode, follow the trend
+    if (trendDirection === "BULL" && rsi < 65) {
+      return "BUY"
+    }
+    if (trendDirection === "BEAR" && rsi > 35) {
+      return "SELL"
+    }
+  }
+
+  if (marketMode === "OSCILLATING") {
+    // In oscillating mode, trade extremes
+    if (rsi < 30) return "BUY"
+    if (rsi > 70) return "SELL"
+  }
+
+  // Counter-trend at RSI extremes
+  if (rsi < 22) return "BUY"
+  if (rsi > 78) return "SELL"
+
+  return "NONE"
+}
+
+This is intentionally simple. Once we confirm
+trades are executing we can add filters back
+one at a time to improve quality.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 7 — FIX THRESHOLD CHECK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The threshold comparison may be broken.
+
+Find where the score is compared to threshold.
+It should look like:
+if (scores.total >= threshold && scores.signal !== 'NONE')
+
+Make sure:
+1. threshold is a number not a string
+   const threshold = parseInt(strategy.score_threshold) || 30
+   
+2. scores.total is a number not undefined
+   const total = Number(scores.total) || 0
+
+3. Log the exact comparison:
+   console.log(`Threshold check: ${total} >= ${threshold} 
+   = ${total >= threshold} | signal=${scores.signal}`)
+
+4. For V75 Sniper the threshold is 38/50
+   NOT 38/55 — Sniper uses 50 point scale
+   Apex uses 55 point scale
+   Make sure each strategy uses its own scale:
+   
+   if (strategy.name.includes('Apex')) {
+     maxScore = 55
+     threshold = strategy.score_threshold // 33
+   } else {
+     maxScore = 50  
+     threshold = strategy.score_threshold // 38
+   }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 8 — FIX CANDLE TIME ISSUE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The 5m candle building from raw data may
+produce candles with wrong timestamps.
+
+When Deriv returns candles the epoch field
+is in SECONDS. Verify this:
+
+In the data fetch response handler:
+const firstCandle = rawResponse.candles[0]
+console.log(`First raw candle:`, firstCandle)
+console.log(`Epoch value: ${firstCandle.epoch}`)
+console.log(`As date: ${new Date(firstCandle.epoch * 1000).toISOString()}`)
+console.log(`As date (if ms): ${new Date(firstCandle.epoch).toISOString()}`)
+
+The correct interpretation should give a date
+in 2025-2026 range, not 1970 (epoch 0 error)
+or 2070+ (milliseconds treated as seconds).
+
+Then when building 5m from 5m fetched directly:
+Map Deriv response to our format:
+const candles = response.candles.map(c => ({
+  time: Number(c.epoch),  // Already in seconds
+  open: Number(c.open),
+  high: Number(c.high),
+  low: Number(c.low),
+  close: Number(c.close)
+}))
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 9 — ADD BACKTEST PROGRESS TO UI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Right now when backtest runs the UI shows
+nothing until it completes. If it's silently
+failing we have no visibility.
+
+Add a simple progress endpoint:
+
+During backtest execution, store progress
+in a shared object:
+const backtestProgress = {
+  runId: string,
+  status: 'running' | 'complete' | 'error',
+  candlesProcessed: number,
+  totalCandles: number,
+  tradesFound: number,
+  lastCandle: string,
+  sessionSkips: number,
+  dataSkips: number,
+  scoreEvals: number,
+  errors: string[]
+}
+
+GET /api/admin/backtest/progress/:runId
+Returns: backtestProgress object
+
+In admin UI, poll this every 2 seconds
+while backtest is running:
+Show progress bar: X/Y candles processed
+Show live counters:
+"Candles: 2341/5000 | Trades: 0 | 
+Session skips: 1205 | Data skips: 340 | 
+Score evals: 796 | Errors: 0"
+
+This immediately shows if trades are being
+found or if everything is being rejected.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 10 — COMPLETE END TO END TEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After all fixes run this exact test:
+
+Test configuration:
+Strategy: V75 Sniper
+Account: Clean10test
+Date From: June 21, 2026
+Date To: June 27, 2026
+(Use cached 1729 candles)
+
+Expected results:
+Candles processed: ~1729
+Session skips: ~900 (candles outside sessions)
+Data skips: ~50 (first 50 candles)
+Score evaluations: ~780
+Trades executed: between 5 and 30
+
+If trades = 0 after this:
+Log and return the first 5 score evaluations
+in full detail and include in the response
+so we can see exactly what scores are 
+being generated.
+
+If trades > 0:
+The system is working.
+Check win rate is between 40-75%.
+Check profit factor is above 0.8.
+Check stop and TP are on correct sides.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+☐ Console shows "BACKTEST STARTING" log
+☐ Console shows candle count and date range
+☐ Console shows session check results for
+  first 10 candles
+☐ Console shows first 20 score evaluations
+  with actual numbers not zeros
+☐ Threshold comparison logs show correctly
+☐ At least 1 trade executes in the backtest
+☐ Trade has valid entry price 38000-42000
+☐ Trade has stop on correct side of entry
+☐ Trade has TP on correct side of entry
+☐ P&L is not zero after at least 1 trade
+☐ Progress UI shows live candle count
+☐ Final summary log shows all counters
+
+Do not mark complete until at least
+5 trades execute in the Jun 21-27 backtest.

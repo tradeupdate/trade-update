@@ -310,7 +310,10 @@ export async function runDeterministicBacktest(
   const { stopMultiplier: slMulti, tp2Multiplier: tp2Multi, scoreThreshold, maxRiskPercent, maxTradesDay, consecutiveLossStop } = config;
   const rr = tp2Multi / slMulti;
 
-  const WARMUP = 60;
+  // FIX: WARMUP must be >= 170 so that 50+ 15m candles exist before scoring.
+  // At 5m granularity: 170 × 5m = 850 min = 14.2 hours → ~56 15m candles.
+  // Previous value of 60 only produced 20 15m candles → score() always returned null.
+  const WARMUP = 175;
   const MAX_HOLD_BARS = 12;
 
   interface OpenTrade {
@@ -337,9 +340,31 @@ export async function runDeterministicBacktest(
   let tradesToday = 0;
   let lastDayTs = 0;
 
+  // Diagnostic counters
+  let scoreNullCount = 0;
+  let scoreBelowThreshold = 0;
+  let scoreDirectionNone = 0;
+  let scoreErrors = 0;
+  let tradeDailyLimit = 0;
+  let tradeConsLossLimit = 0;
+  let firstScoreLogged = false;
+
+  console.log(`=== BACKTEST STARTING ===`);
+  console.log(`Total 5m candles: ${raw5m.length}  15m candles: ${all15m.length}  WARMUP: ${WARMUP}`);
+  if (raw5m.length > 0) {
+    console.log(`Date range: ${new Date(raw5m[0]!.time * 1000).toISOString()} → ${new Date(raw5m[raw5m.length - 1]!.time * 1000).toISOString()}`);
+    console.log(`First candle: time=${raw5m[0]!.time} close=${raw5m[0]!.close}`);
+  }
+  console.log(`Config: threshold=${scoreThreshold} risk=${maxRiskPercent}% slX=${slMulti} tp2X=${tp2Multi} maxDayTrades=${maxTradesDay} consLossStop=${consecutiveLossStop}`);
+
   for (let i = WARMUP; i < raw5m.length; i++) {
     const candle = raw5m[i];
     if (!candle) continue;
+
+    // Diagnostic: log every 200th candle
+    if (i % 200 === 0) {
+      console.log(`[BT] Candle ${i}/${raw5m.length} time=${new Date(candle.time * 1000).toISOString()} close=${candle.close} balance=${balance} trades=${tradeList.length}`);
+    }
 
     const dayTs = Math.floor(candle.time / 86400) * 86400;
     if (dayTs !== lastDayTs) {
@@ -394,32 +419,66 @@ export async function runDeterministicBacktest(
       continue;
     }
 
-    if (tradesToday >= maxTradesDay) continue;
-    if (consLosses >= consecutiveLossStop) continue;
+    if (tradesToday >= maxTradesDay) { tradeDailyLimit++; continue; }
+    if (consLosses >= consecutiveLossStop) { tradeConsLossLimit++; continue; }
     if (dailyPnl <= -(balance * 0.05)) continue;
 
-    const window5m = raw5m.slice(Math.max(0, i - 29), i + 1);
-    const window15m = all15m.filter(c => c.time <= candle.time).slice(-55);
-    const synth1m = synthetic1mFrom5m(window5m.slice(-4));
+    // Build scoring windows — use larger history for better indicator quality
+    // FIX: pass 50 5m candles (not 30) and 6 candles for synthetic 1m (30 1m candles instead of 20)
+    const window5m = raw5m.slice(Math.max(0, i - 49), i + 1);
+    const window15m = all15m.filter(c => c.time <= candle.time).slice(-60);
+    const synth1m = synthetic1mFrom5m(window5m.slice(-6)); // 6×5 = 30 synthetic 1m candles
 
     const score5m: Candle[] = window5m.map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: 0 }));
     const score15m: Candle[] = window15m.map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: 0 }));
 
-    const result = score(synth1m, score5m, score15m, dailyPnl, peak, balance, consLosses);
-    if (!result || !result.ready) continue;
-    if (result.total < scoreThreshold) continue;
-    if (result.direction === "NONE") continue;
+    let result;
+    try {
+      result = score(synth1m, score5m, score15m, dailyPnl, peak, balance, consLosses);
+    } catch (err) {
+      scoreErrors++;
+      if (scoreErrors <= 3) console.error(`[BT] Score error at candle ${i}:`, err);
+      continue;
+    }
+
+    if (!result || !result.ready) {
+      scoreNullCount++;
+      if (scoreNullCount <= 3) {
+        console.log(`[BT] score() returned null at i=${i}: 1m=${synth1m.length} 5m=${score5m.length} 15m=${score15m.length}`);
+      }
+      continue;
+    }
+
+    // Log first few score results for diagnostics
+    if (!firstScoreLogged) {
+      firstScoreLogged = true;
+      console.log(`[BT] First valid score at i=${i}: total=${result.total} direction=${result.direction} trend=${result.trendDirection} adx=${result.adx} rsi=${result.rsi} threshold=${scoreThreshold}`);
+    }
+    if (i % 500 === 0) {
+      console.log(`[BT] Score sample i=${i}: total=${result.total} dir=${result.direction} trend=${result.trendDirection} adx=${result.adx} rsi=${result.rsi}`);
+    }
+
+    if (result.total < scoreThreshold) { scoreBelowThreshold++; continue; }
+    if (result.direction === "NONE") {
+      scoreDirectionNone++;
+      if (scoreDirectionNone <= 5) {
+        console.log(`[BT] Direction=NONE at i=${i}: total=${result.total} adx=${result.adx} trend=${result.trendDirection} rsi=${result.rsi} band=${result.bandTouched}`);
+      }
+      continue;
+    }
 
     const stake = Math.round(balance * (maxRiskPercent / 100) * 100) / 100;
     if (stake <= 0) continue;
 
-    const atr = result.atrValue > 0 ? result.atrValue : candle.close * 0.001;
+    const atrVal = result.atrValue > 0 ? result.atrValue : candle.close * 0.001;
     const slPrice = result.direction === "BUY"
-      ? candle.close - atr * slMulti
-      : candle.close + atr * slMulti;
+      ? candle.close - atrVal * slMulti
+      : candle.close + atrVal * slMulti;
     const tpPrice = result.direction === "BUY"
-      ? candle.close + atr * tp2Multi
-      : candle.close - atr * tp2Multi;
+      ? candle.close + atrVal * tp2Multi
+      : candle.close - atrVal * tp2Multi;
+
+    console.log(`[BT] TRADE ENTRY i=${i} dir=${result.direction} score=${result.total} close=${candle.close} sl=${slPrice.toFixed(2)} tp=${tpPrice.toFixed(2)} stake=${stake}`);
 
     openTrade = {
       direction: result.direction,
@@ -433,6 +492,10 @@ export async function runDeterministicBacktest(
     };
     tradesToday++;
   }
+
+  console.log(`=== BACKTEST COMPLETE ===`);
+  console.log(`Candles processed: ${raw5m.length - WARMUP}  Trades: ${tradeList.length}`);
+  console.log(`scoreNull=${scoreNullCount} belowThreshold=${scoreBelowThreshold} dirNone=${scoreDirectionNone} errors=${scoreErrors} dailyLimit=${tradeDailyLimit} consLoss=${tradeConsLossLimit}`);
 
   if (openTrade) {
     const last = raw5m[raw5m.length - 1];
