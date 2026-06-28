@@ -12,7 +12,7 @@ import { useState, useMemo } from "react";
 import {
   Play, BarChart2, Loader2, TrendingUp, TrendingDown,
   Clock, Target, RefreshCw, Database, AlertTriangle, Hash,
-  Activity, Layers, GitBranch, Zap,
+  Activity, Layers, GitBranch, Zap, X, List,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
@@ -69,6 +69,7 @@ export default function AdminBacktest() {
   const [sessionStartHour, setSessionStartHour] = useState(6);
   const [sessionEndHour, setSessionEndHour] = useState(20);
   const [activeResult, setActiveResult] = useState<any>(null);
+  const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
 
   const { data: strategies } = useGetStrategies({ query: { queryKey: ["strategies"] } });
   const { data: history, isLoading: historyLoading } = useGetBacktestResults({
@@ -160,6 +161,7 @@ export default function AdminBacktest() {
   }, [scoreHistogram]);
 
   return (
+    <>
     <AdminLayout>
       <div className="flex flex-col gap-6 max-w-7xl mx-auto">
         <div className="flex items-center justify-between">
@@ -469,7 +471,11 @@ export default function AdminBacktest() {
                         {Object.entries(featureImportance as Record<string, number>)
                           .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
                           .map(([key, val]) => (
-                            <CorrelationBar key={key} label={key} value={val} />
+                            <CorrelationBar
+                              key={key}
+                              label={({ c1Trend: "1h Trend", c2Confirm: "15m Conf", c3Entry: "5m Entry" } as Record<string,string>)[key] ?? key}
+                              value={val}
+                            />
                           ))}
                       </div>
                       {display.totalTrades < 10 && (
@@ -555,7 +561,7 @@ export default function AdminBacktest() {
                               {histogramData.map((entry: any, idx: number) => (
                                 <Cell
                                   key={idx}
-                                  fill={entry.bucket === "40-45" || entry.bucket === "45+" ? "#00D4A4" : "#1C1F2E"}
+                                  fill={entry.bucket === "20-22" || entry.bucket === "22-25" || entry.bucket === "25+" ? "#00D4A4" : "#1C1F2E"}
                                 />
                               ))}
                             </Bar>
@@ -591,6 +597,63 @@ export default function AdminBacktest() {
                     <div className="text-lg font-bold tabular-nums">{display.avgDurationMinutes?.toFixed(0) ?? "—"}m</div>
                   </Card>
                 </div>
+
+                {/* Trade Log — available for freshly-run backtests */}
+                {activeResult?.trades && activeResult.trades.length > 0 && (
+                  <Card className="bg-card border-border p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <List className="w-3.5 h-3.5 text-primary" />
+                      <span className="text-xs font-semibold text-foreground uppercase tracking-wide">Trade Log</span>
+                      <span className="ml-auto text-[10px] text-text-secondary">{activeResult.trades.length} trades · click row for detail</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-text-secondary border-b border-border">
+                            <th className="text-left pb-1.5 font-medium">#</th>
+                            <th className="text-left pb-1.5 font-medium">Dir</th>
+                            <th className="text-left pb-1.5 font-medium">Entry</th>
+                            <th className="text-left pb-1.5 font-medium">Exit</th>
+                            <th className="text-left pb-1.5 font-medium">Reason</th>
+                            <th className="text-right pb-1.5 font-medium">Score</th>
+                            <th className="text-right pb-1.5 font-medium">P&L</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeResult.trades.map((trade: any) => (
+                            <tr
+                              key={trade.tradeNum}
+                              className="border-b border-border/50 cursor-pointer hover:bg-muted/30 transition-colors"
+                              onClick={() => setSelectedTrade(trade)}
+                            >
+                              <td className="py-1.5 text-text-secondary">{trade.tradeNum}</td>
+                              <td className="py-1.5">
+                                <span className={`font-bold ${trade.direction === "BUY" ? "text-primary" : "text-accent-red"}`}>
+                                  {trade.direction}
+                                </span>
+                              </td>
+                              <td className="py-1.5 font-mono text-text-secondary">{trade.entryPrice.toFixed(2)}</td>
+                              <td className="py-1.5 font-mono text-text-secondary">{trade.exitPrice.toFixed(2)}</td>
+                              <td className="py-1.5">
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                  trade.closeReason === "tp2" ? "bg-primary/20 text-primary" :
+                                  trade.closeReason === "sl" ? "bg-accent-red/20 text-accent-red" :
+                                  "bg-muted text-text-secondary"
+                                }`}>
+                                  {trade.closeReason === "sl" ? "SL" : trade.closeReason === "tp2" ? "TP2" : trade.closeReason === "breakeven" ? "BE" : trade.closeReason === "time_stop" ? "Time" : "EOD"}
+                                </span>
+                              </td>
+                              <td className="py-1.5 text-right font-mono">{trade.score}</td>
+                              <td className={`py-1.5 text-right font-mono font-bold ${trade.pnl > 0 ? "text-primary" : "text-accent-red"}`}>
+                                {trade.pnl > 0 ? "+" : ""}{trade.pnl.toFixed(2)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                )}
               </>
             ) : (
               <div className="flex flex-col items-center justify-center h-[400px] text-text-secondary gap-3">
@@ -603,5 +666,86 @@ export default function AdminBacktest() {
         </div>
       </div>
     </AdminLayout>
+
+    {/* Trade detail modal */}
+    {selectedTrade && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setSelectedTrade(null)}>
+        <div className="bg-card border border-border rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <span className={`font-bold text-lg ${selectedTrade.direction === "BUY" ? "text-primary" : "text-accent-red"}`}>
+                {selectedTrade.direction}
+              </span>
+              <span className="text-sm text-text-secondary">Trade #{selectedTrade.tradeNum}</span>
+            </div>
+            <button onClick={() => setSelectedTrade(null)} className="text-text-secondary hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="bg-muted rounded-lg p-3">
+              <div className="text-text-secondary text-xs mb-1">Entry Price</div>
+              <div className="font-mono font-bold">{selectedTrade.entryPrice.toFixed(2)}</div>
+            </div>
+            <div className="bg-muted rounded-lg p-3">
+              <div className="text-text-secondary text-xs mb-1">Exit Price</div>
+              <div className="font-mono font-bold">{selectedTrade.exitPrice.toFixed(2)}</div>
+            </div>
+            <div className="bg-muted rounded-lg p-3">
+              <div className="text-text-secondary text-xs mb-1">Stop Loss</div>
+              <div className="font-mono font-bold text-accent-red">{selectedTrade.slPrice.toFixed(2)}</div>
+            </div>
+            <div className="bg-muted rounded-lg p-3">
+              <div className="text-text-secondary text-xs mb-1">TP1 / TP2</div>
+              <div className="font-mono text-xs">{selectedTrade.tp1Price.toFixed(2)} / {selectedTrade.tp2Price.toFixed(2)}</div>
+            </div>
+            <div className="bg-muted rounded-lg p-3">
+              <div className="text-text-secondary text-xs mb-1">Close Reason</div>
+              <div className={`font-bold ${
+                selectedTrade.closeReason === "tp2" ? "text-primary" :
+                selectedTrade.closeReason === "sl" ? "text-accent-red" : "text-foreground"
+              }`}>
+                {selectedTrade.closeReason === "sl" ? "Stop Loss" :
+                 selectedTrade.closeReason === "tp2" ? "Take Profit 2" :
+                 selectedTrade.closeReason === "breakeven" ? "Breakeven" :
+                 selectedTrade.closeReason === "time_stop" ? "Time Stop (30m)" : "End of Data"}
+              </div>
+            </div>
+            <div className="bg-muted rounded-lg p-3">
+              <div className="text-text-secondary text-xs mb-1">Duration</div>
+              <div className="font-bold">{selectedTrade.durationMinutes}m</div>
+            </div>
+            <div className="bg-muted rounded-lg p-3 col-span-2">
+              <div className="text-text-secondary text-xs mb-2">Score Breakdown</div>
+              <div className="flex gap-4">
+                <div className="text-center flex-1">
+                  <div className="text-xl font-bold font-mono text-primary">{selectedTrade.c1}</div>
+                  <div className="text-[10px] text-text-secondary">1h Trend</div>
+                </div>
+                <div className="text-center flex-1">
+                  <div className="text-xl font-bold font-mono text-primary">{selectedTrade.c2}</div>
+                  <div className="text-[10px] text-text-secondary">15m Conf</div>
+                </div>
+                <div className="text-center flex-1">
+                  <div className="text-xl font-bold font-mono text-primary">{selectedTrade.c3}</div>
+                  <div className="text-[10px] text-text-secondary">5m Entry</div>
+                </div>
+                <div className="text-center flex-1 border-l border-border pl-4">
+                  <div className="text-xl font-bold font-mono">{selectedTrade.score}</div>
+                  <div className="text-[10px] text-text-secondary">Total / 30</div>
+                </div>
+              </div>
+            </div>
+            <div className={`bg-muted rounded-lg p-3 col-span-2 ${selectedTrade.pnl > 0 ? "border border-primary/30" : "border border-accent-red/30"}`}>
+              <div className="text-text-secondary text-xs mb-1">P&amp;L</div>
+              <div className={`text-2xl font-bold font-mono ${selectedTrade.pnl > 0 ? "text-primary" : "text-accent-red"}`}>
+                {selectedTrade.pnl > 0 ? "+" : ""}{selectedTrade.pnl.toFixed(2)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

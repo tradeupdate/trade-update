@@ -10,14 +10,27 @@ export interface ScoresPayload {
   loading?: boolean;
   message?: string;
   candlesLoaded?: number;
+  candlesNeeded?: number;
   total?: number;
+  c1?: number;
+  c2?: number;
+  c3?: number;
+  signal?: string;
+  direction?: string;
+  ema20_1h?: number;
+  ema50_1h?: number;
+  ema9_15m?: number;
+  ema21_15m?: number;
+  adx15m?: number;
+  rsi5m?: number;
+  ema21_5m?: number;
+  rejectionReason?: string | null;
+  /** @deprecated legacy fields kept for backward compat */
   trend?: number;
   volatility?: number;
   timing?: number;
   pullback?: number;
   risk?: number;
-  signal?: string;
-  direction?: string;
   ema9?: number;
   ema21?: number;
   adx?: number;
@@ -32,7 +45,6 @@ export interface ScoresPayload {
   trendDirection?: string;
   bandTouched?: string;
   pullbackZone?: boolean;
-  rejectionReason?: string | null;
 }
 
 export interface BotPayload {

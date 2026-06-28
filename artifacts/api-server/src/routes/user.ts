@@ -389,20 +389,17 @@ router.get("/stream", async (req, res) => {
       if (state.lastScoreResult) {
         const r = state.lastScoreResult;
         botManager.broadcastToUser(userId, "scores", {
-          total: r.total, trend: r.trend, volatility: r.volatility,
-          timing: r.timing, pullback: r.pullback, risk: r.risk,
+          total: r.total, c1: r.c1, c2: r.c2, c3: r.c3,
           signal: r.direction, direction: r.direction, loading: false,
-          ema9: r.ema9, ema21: r.ema21, adx: r.adx, rsi: r.rsi,
-          bbUpper: r.bbUpper, bbLower: r.bbLower, stochK: r.stochK,
-          macdHistogram: r.macdHistogram, rangeContext: r.rangeContext,
-          consolidation: r.consolidationDetected, spikeDetected: r.spikeDetected,
-          trendDirection: r.trendDirection, bandTouched: r.bandTouched,
-          pullbackZone: r.pullbackZoneActive, rejectionReason: state.pauseReason,
+          ema20_1h: r.ema20_1h, ema50_1h: r.ema50_1h,
+          ema9_15m: r.ema9_15m, ema21_15m: r.ema21_15m,
+          adx15m: r.adx15m, rsi5m: r.rsi5m, ema21_5m: r.ema21_5m,
+          rejectionReason: state.pauseReason,
         });
       } else if (state.isRunning) {
-        const loaded = derivService.getCandles("15m", 200).length;
+        const loaded = derivService.getCandles("1h", 200).length;
         botManager.broadcastToUser(userId, "scores", {
-          loading: true, message: "Gathering market data...", candlesLoaded: loaded
+          loading: true, message: "Gathering market data...", candlesLoaded: loaded, candlesNeeded: 55
         });
       }
     } catch {}

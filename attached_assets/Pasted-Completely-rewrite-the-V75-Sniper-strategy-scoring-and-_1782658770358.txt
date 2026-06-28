@@ -1,0 +1,566 @@
+Completely rewrite the V75 Sniper strategy 
+scoring and signal engine from scratch.
+Keep all existing UI, database, and backtest 
+infrastructure. Only replace the signal logic.
+
+The goal is a strategy that achieves 55-65% 
+win rate consistently. We will reach this by 
+being far more selective about entries and 
+only trading when multiple timeframes agree.
+
+The trade analysis shows:
+- Stop and TP placement is CORRECT
+- Signal direction logic is the problem
+- 43.5/50 scored trades are still losing
+- This means the scoring is not measuring 
+  the right things
+- High scores are not predicting direction
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — THE NEW CORE PHILOSOPHY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The old strategy tried to score everything 
+and trade when score was high enough.
+The problem: high scores don't predict 
+direction. A perfect volatility score and 
+perfect session score mean nothing if the 
+trend is about to reverse.
+
+New philosophy: THREE TIMEFRAME ALIGNMENT.
+
+A trade only fires when ALL THREE timeframes
+agree on the same direction simultaneously.
+
+1h chart: defines the dominant trend
+  (this is new - we weren't using 1h before)
+15m chart: confirms trend is active
+5m chart: provides the entry timing
+
+If 1h says BULL, 15m says BULL, 5m says 
+pullback complete = BUY
+If any one of three disagrees = NO TRADE
+
+This single rule eliminates the majority of
+bad trades. A trade that looks good on 5m
+but goes against the 1h trend is the most
+common cause of losses on V75.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — BUILD 1H CANDLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The backtest currently uses 1m, 5m, 15m.
+Add 1h candle building.
+
+In the backtest candle builder:
+function build1hCandles(candles5m: Candle[]): Candle[] {
+  const grouped: { [key: number]: Candle[] } = {}
+  
+  candles5m.forEach(candle => {
+    // Round down to nearest hour boundary
+    const boundary = Math.floor(candle.time / 3600) * 3600
+    if (!grouped[boundary]) grouped[boundary] = []
+    grouped[boundary].push(candle)
+  })
+  
+  return Object.entries(grouped)
+    .filter(([_, g]) => g.length > 0)
+    .map(([boundary, group]) => {
+      const sorted = group.sort((a,b) => a.time - b.time)
+      return {
+        time: parseInt(boundary),
+        open: sorted[0].open,
+        high: Math.max(...sorted.map(c => c.high)),
+        low: Math.min(...sorted.map(c => c.low)),
+        close: sorted[sorted.length-1].close
+      }
+    })
+    .sort((a,b) => a.time - b.time)
+}
+
+Add candles1h to the backtest state.
+Update as candles are processed.
+Need minimum 10 x 1h candles before scoring.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — NEW SCORING ENGINE (0-30 POINTS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Replace the entire old scoring system.
+New system is simpler, more focused, 
+and every component directly predicts 
+direction rather than measuring quality.
+
+Total: 30 points maximum
+Threshold: 20/30 to execute trade
+
+COMPONENT 1 — 1H TREND (0-10 points)
+This is the most important component.
+If this is weak, nothing else matters.
+
+Calculate on 1h candles:
+- EMA20 on 1h (20 period exponential MA)
+- EMA50 on 1h (50 period exponential MA)
+- Price position relative to both EMAs
+
+function score1hTrend(candles1h, direction):
+  closes = candles1h.map(c => c.close)
+  ema20 = calculateEMA(closes, 20)
+  ema50 = calculateEMA(closes, 50)
+  currentPrice = closes[closes.length-1]
+  
+  if direction === "BUY":
+    // All three must be aligned bullish
+    if ema20 > ema50 AND currentPrice > ema20:
+      // Check slope - EMA20 must be rising
+      ema20_5bars_ago = calculateEMA(
+        closes.slice(0, -5), 20)
+      if ema20 > ema20_5bars_ago:
+        return 10 // Perfect bull trend
+      else:
+        return 6 // Bull alignment but flat
+    if ema20 > ema50 AND currentPrice < ema20:
+      return 4 // Bull trend but price below EMA
+    if ema20 < ema50:
+      return 0 // Bear trend - NO BUY
+  
+  if direction === "SELL":
+    if ema20 < ema50 AND currentPrice < ema20:
+      ema20_5bars_ago = calculateEMA(
+        closes.slice(0, -5), 20)
+      if ema20 < ema20_5bars_ago:
+        return 10 // Perfect bear trend
+      else:
+        return 6 // Bear alignment but flat
+    if ema20 < ema50 AND currentPrice > ema20:
+      return 4 // Bear trend but price above EMA
+    if ema20 > ema50:
+      return 0 // Bull trend - NO SELL
+
+HARD RULE: If Component 1 scores 0 in the
+signal direction, STOP SCORING. Return NONE.
+Do not evaluate other components.
+Never trade against the 1h trend.
+
+COMPONENT 2 — 15M CONFIRMATION (0-10 points)
+Confirms the trend is also visible on 15m.
+
+Calculate on 15m candles:
+- EMA9 on 15m
+- EMA21 on 15m  
+- ADX(14) on 15m
+
+function score15mConfirmation(candles15m, direction):
+  closes15m = candles15m.map(c => c.close)
+  ema9 = calculateEMA(closes15m, 9)
+  ema21 = calculateEMA(closes15m, 21)
+  adx = calculateADX(candles15m, 14)
+  
+  if direction === "BUY":
+    if ema9 > ema21 AND adx > 25:
+      return 10 // Strong bull confirmation
+    if ema9 > ema21 AND adx > 20:
+      return 7  // Moderate bull confirmation
+    if ema9 > ema21 AND adx <= 20:
+      return 3  // Weak - EMA aligned but no trend
+    if ema9 < ema21:
+      return 0  // 15m disagrees with 1h
+  
+  if direction === "SELL":
+    if ema9 < ema21 AND adx > 25:
+      return 10
+    if ema9 < ema21 AND adx > 20:
+      return 7
+    if ema9 < ema21 AND adx <= 20:
+      return 3
+    if ema9 > ema21:
+      return 0
+
+HARD RULE: If Component 2 scores 0,
+return NONE. Both 1h and 15m must agree.
+
+COMPONENT 3 — 5M ENTRY TIMING (0-10 points)
+Only reached if Components 1 and 2 pass.
+Finds the precise moment to enter.
+
+The best entry is a PULLBACK in a confirmed trend.
+Not a breakout. Not chasing. A pullback.
+
+Calculate on 5m candles:
+- EMA21 on 5m (the pullback target)
+- RSI(14) on 5m (momentum confirmation)
+- Distance from current price to EMA21
+
+function score5mEntry(candles5m, direction):
+  closes5m = candles5m.map(c => c.close)
+  ema21_5m = calculateEMA(closes5m, 21)
+  rsi = calculateRSI(candles5m, 14)
+  currentPrice = closes5m[closes5m.length-1]
+  
+  distanceFromEMA = Math.abs(currentPrice - ema21_5m)
+  distancePct = distanceFromEMA / ema21_5m * 100
+  
+  if direction === "BUY":
+    // We want price near or just touched EMA21
+    // and RSI showing oversold on pullback
+    
+    priceNearEMA = distancePct < 0.15
+    // Price within 0.15% of EMA21
+    
+    priceJustBelowEMA = currentPrice < ema21_5m 
+      AND distancePct < 0.3
+    // Just pulled back below EMA21
+    
+    rsiPullback = rsi > 30 AND rsi < 55
+    // RSI in pullback territory, not oversold
+    
+    rsiOversold = rsi < 35
+    // Stronger oversold = better entry
+    
+    if priceNearEMA AND rsiPullback:
+      return 10 // Perfect pullback to EMA
+    if priceNearEMA AND rsi < 60:
+      return 8
+    if priceJustBelowEMA AND rsiOversold:
+      return 9 // Pulled back below EMA, oversold
+    if distancePct < 0.5 AND rsi < 50:
+      return 6 // Near EMA but not perfect
+    if distancePct < 1.0 AND rsi < 45:
+      return 4 // Somewhat near EMA
+    if rsi < 30:
+      return 5 // Oversold even if far from EMA
+    
+    // If price is far above EMA21 = chasing
+    if currentPrice > ema21_5m AND distancePct > 0.5:
+      return 0 // Do not chase a run
+    
+    return 2 // Default low score
+  
+  if direction === "SELL":
+    // Mirror for sell direction
+    priceNearEMA = distancePct < 0.15
+    priceJustAboveEMA = currentPrice > ema21_5m 
+      AND distancePct < 0.3
+    rsiPullback = rsi > 45 AND rsi < 70
+    rsiOverbought = rsi > 65
+    
+    if priceNearEMA AND rsiPullback:
+      return 10
+    if priceNearEMA AND rsi > 40:
+      return 8
+    if priceJustAboveEMA AND rsiOverbought:
+      return 9
+    if distancePct < 0.5 AND rsi > 50:
+      return 6
+    if distancePct < 1.0 AND rsi > 55:
+      return 4
+    if rsi > 70:
+      return 5
+    if currentPrice < ema21_5m AND distancePct > 0.5:
+      return 0 // Do not chase a drop
+    
+    return 2
+
+TOTAL SCORE = C1 + C2 + C3 (max 30)
+THRESHOLD = 20/30
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — SIGNAL GENERATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Replace the entire old signal generation:
+
+function generateSignal(
+  candles1h: Candle[],
+  candles15m: Candle[],
+  candles5m: Candle[]
+): SignalResult {
+
+  // Need minimum candle counts
+  if (candles1h.length < 10) 
+    return { signal: 'NONE', reason: 'Insufficient 1h data' }
+  if (candles15m.length < 21) 
+    return { signal: 'NONE', reason: 'Insufficient 15m data' }
+  if (candles5m.length < 50) 
+    return { signal: 'NONE', reason: 'Insufficient 5m data' }
+
+  // Try BUY first
+  const buyC1 = score1hTrend(candles1h, 'BUY')
+  
+  if (buyC1 >= 6) {
+    // 1h supports BUY, check 15m
+    const buyC2 = score15mConfirmation(candles15m, 'BUY')
+    
+    if (buyC2 >= 6) {
+      // Both 1h and 15m support BUY, check entry
+      const buyC3 = score5mEntry(candles5m, 'BUY')
+      const buyTotal = buyC1 + buyC2 + buyC3
+      
+      if (buyTotal >= 20) {
+        return {
+          signal: 'BUY',
+          total: buyTotal,
+          c1: buyC1,
+          c2: buyC2,
+          c3: buyC3,
+          reason: 'Three timeframe bull alignment'
+        }
+      }
+    }
+  }
+
+  // Try SELL
+  const sellC1 = score1hTrend(candles1h, 'SELL')
+  
+  if (sellC1 >= 6) {
+    const sellC2 = score15mConfirmation(candles15m, 'SELL')
+    
+    if (sellC2 >= 6) {
+      const sellC3 = score5mEntry(candles5m, 'SELL')
+      const sellTotal = sellC1 + sellC2 + sellC3
+      
+      if (sellTotal >= 20) {
+        return {
+          signal: 'SELL',
+          total: sellTotal,
+          c1: sellC1,
+          c2: sellC2,
+          c3: sellC3,
+          reason: 'Three timeframe bear alignment'
+        }
+      }
+    }
+  }
+
+  return { 
+    signal: 'NONE', 
+    reason: 'No three timeframe alignment',
+    buyC1, sellC1
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — STOP LOSS AND TAKE PROFIT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The existing stop and TP placement is 
+mathematically correct based on the trade 
+detail we saw. Keep the same structure but 
+tighten the parameters.
+
+STOP LOSS:
+stopDistance = ATR(14) on 5m × 1.0
+(reduced from 1.2 — tighter stops improve R:R)
+Minimum: 30 pips
+Maximum: 120 pips
+(reduced from 180 — if ATR requires 180 pip
+stop the market is too volatile for entry)
+
+If ATR-based stop > 120 pips:
+Reject the trade entirely.
+Log: "Trade rejected — too volatile for entry"
+This alone eliminates many bad setups.
+
+For BUY: stopLoss = entryPrice - stopDistance
+For SELL: stopLoss = entryPrice + stopDistance
+
+Validate immediately after calculation:
+if BUY and stopLoss >= entryPrice: BUG — fix
+if SELL and stopLoss <= entryPrice: BUG — fix
+
+TAKE PROFIT:
+TP1 = 1.5× stop distance (50% close here)
+TP2 = 3.0× stop distance (remaining 50%)
+
+For BUY:
+tp1 = entryPrice + (stopDistance × 1.5)
+tp2 = entryPrice + (stopDistance × 3.0)
+
+For SELL:
+tp1 = entryPrice - (stopDistance × 1.5)
+tp2 = entryPrice - (stopDistance × 3.0)
+
+Validate:
+if BUY and tp1 <= entryPrice: BUG — fix
+if BUY and tp2 <= tp1: BUG — fix
+if SELL and tp1 >= entryPrice: BUG — fix
+if SELL and tp2 >= tp1: BUG — fix
+
+Minimum R:R: TP2 must be at least 2:1
+If (tp2-entry) / stopDistance < 2.0: reject trade
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — TRADE MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Keep existing trade management but fix
+the time stop:
+
+Current time stop: 55 minutes (saw in trade detail)
+This is too long. Reduce to 30 minutes.
+
+V75 trades should resolve within 30 minutes.
+A trade sitting for 55 minutes without hitting
+TP or stop is a bad trade — exit it.
+
+Time stop: 30 minutes
+Counter-trend time stop: 15 minutes
+
+Break even: move stop to entry when 
+profit reaches 1.0× stop distance
+(currently working correctly — keep it)
+
+Partial close at TP1: close 50% 
+(currently working correctly — keep it)
+
+Trail remaining 50% with 1.0× ATR on 5m
+after TP1 is hit.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — SESSION AND RISK RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SESSION FILTER:
+Keep exactly as implemented.
+Asian: 00:00-03:00 UTC
+London: 07:00-10:00 UTC
+Overlap: 12:00-16:00 UTC
+NY: 13:00-17:00 UTC
+
+ADDITIONAL SESSION RULE (new):
+Do not enter a trade in the last 15 minutes
+of any session.
+Asian: no new trades after 02:45 UTC
+London: no new trades after 09:45 UTC
+Overlap: no new trades after 15:45 UTC
+NY: no new trades after 16:45 UTC
+
+Reason: trades entered near session end
+don't have enough time to develop and
+often get stopped by session-change volatility.
+
+RISK PER TRADE:
+1% of account balance per trade
+Stake = balance × 0.01
+Min $1, Max $50
+
+DAILY LIMITS:
+Max 4 trades per day
+Max 2 trades per session
+Consecutive loss stop: 3 losses = stop for day
+Daily loss cap: 5% of balance
+
+COOLDOWN:
+10 minutes between trades
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — UPDATE STRATEGY IN DATABASE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Update V75 Sniper strategy record:
+name: "V75 Sniper"
+description: "Three timeframe trend alignment 
+strategy. Requires 1h, 15m and 5m to agree 
+before entering. Pullback entries only. 
+Never trades against the dominant trend."
+score_threshold: 20
+entry_timeframe: "5m"
+signal_timeframe: "15m"
+trend_timeframe: "1h"
+max_trades_day: 4
+max_trades_hour: 2
+consecutive_loss_stop: 3
+stop_multiplier: 1.0
+tp1_multiplier: 1.5
+tp2_multiplier: 3.0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 9 — BACKTEST AFTER REWRITE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After rewrite run backtest immediately:
+
+Account: Clean10test ($5,000)
+Strategy: V75 Sniper (rewritten)
+Period: June 1 - June 27 2026
+Use cached candles if available
+
+Expected behavior changes:
+FEWER trades than before
+(three timeframe filter is very selective)
+Expect 15-35 trades over 27 days
+not 50-100 trades
+
+BETTER win rate
+Because every trade has 1h, 15m and 5m
+all pointing the same direction
+Target: 55-65% win rate
+
+Log every signal evaluation:
+"1h score: 8/10 (BULL)
+ 15m score: 7/10 (BULL confirmed)
+ 5m score: 6/10 (pullback at EMA21)
+ Total: 21/30 — EXECUTING BUY"
+
+Or:
+"1h score: 0/10 (BEAR trend) — NO TRADE"
+
+This logging tells us the filter is working.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 10 — DISPLAY UPDATES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Update the score display on user dashboard:
+
+Change score panel from old components to:
+
+1H Trend        [========--] 8/10
+15M Confirm     [=======---] 7/10  
+5M Entry        [======----] 6/10
+─────────────────────────────────
+Total           21 / 30
+
+Signal: BUY ▲ (Three TF aligned)
+
+Or when no signal:
+1H Trend        [====------] 4/10
+No trade — 1h trend not strong enough
+
+Remove all old component references:
+BB Expansion, Pullback Precision,
+Candle Pattern, Session Quality,
+Growth Alignment — all removed from display.
+
+Replace with the 3 new components only.
+Score ring changes from /50 or /55 to /30.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+☐ 1h candles build correctly from 5m data
+☐ 1h EMA20 and EMA50 calculate correctly
+☐ Score returns 0 when trend direction wrong
+☐ No trade fires when 1h score is 0
+☐ 15m ADX calculates correctly
+☐ No trade fires when 15m score is 0
+☐ 5m pullback detection works
+☐ Score total is 0-30 range
+☐ Threshold is 20/30
+☐ BUY stop is always BELOW entry
+☐ SELL stop is always ABOVE entry
+☐ BUY TP1 and TP2 always ABOVE entry
+☐ SELL TP1 and TP2 always BELOW entry
+☐ Time stop is 30 minutes not 55
+☐ Session end filter blocks last 15 minutes
+☐ Backtest runs and produces trades
+☐ Trades are 15-35 over 27 day period
+☐ Win rate is 50%+ after rewrite
+☐ Profit factor is above 1.0
+☐ Dashboard shows 3 component scores /30
+☐ No Math.random() anywhere in scoring
+
+Do not mark complete until backtest shows
+win rate above 50% and profit factor above 1.0

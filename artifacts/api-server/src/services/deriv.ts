@@ -42,6 +42,7 @@ class DerivService {
   private candles1m: Candle[] = [];
   private candles5m: Candle[] = [];
   private candles15m: Candle[] = [];
+  private candles1h: Candle[] = [];
   private currentCandle: InProgressCandle | null = null;
   private latestTick: Tick = { price: 39500, timestamp: Date.now() };
   private tickListeners: Set<TickListener> = new Set();
@@ -109,7 +110,7 @@ class DerivService {
       end: "latest",
       req_id: 5,
     });
-    // 15m candles — history seed (scoring needs >= 50)
+    // 15m candles — history seed (scoring needs >= 25)
     this.send({
       ticks_history: SYMBOL,
       style: "candles",
@@ -117,6 +118,15 @@ class DerivService {
       count: 80,
       end: "latest",
       req_id: 15,
+    });
+    // 1h candles — history seed (scoring needs >= 55 for EMA50)
+    this.send({
+      ticks_history: SYMBOL,
+      style: "candles",
+      granularity: 3600,
+      count: 120,
+      end: "latest",
+      req_id: 60,
     });
   }
 
@@ -170,13 +180,14 @@ class DerivService {
           volume: 0,
         }));
         if (msg.req_id === 5) {
-          // Seed 5m store from dedicated history request
           this.candles5m = mapped;
           logger.info(`Deriv: seeded ${mapped.length} 5m candles`);
         } else if (msg.req_id === 15) {
-          // Seed 15m store from dedicated history request
           this.candles15m = mapped;
           logger.info(`Deriv: seeded ${mapped.length} 15m candles`);
+        } else if (msg.req_id === 60) {
+          this.candles1h = mapped;
+          logger.info(`Deriv: seeded ${mapped.length} 1h candles`);
         } else {
           // Default: 1m candle history, rebuild higher TFs from scratch
           this.candles1m = mapped;
@@ -242,6 +253,7 @@ class DerivService {
   private buildHigherTimeframes() {
     this.candles5m = this.mergeHigherTf(this.candles5m, 5);
     this.candles15m = this.mergeHigherTf(this.candles15m, 15);
+    this.candles1h = this.mergeHigherTf(this.candles1h, 60);
   }
 
   private mergeHigherTf(existing: Candle[], minutesPerCandle: number): Candle[] {
@@ -282,8 +294,8 @@ class DerivService {
     return this.latestTick;
   }
 
-  getCandles(tf: "1m" | "5m" | "15m", count = 200): Candle[] {
-    const src = tf === "1m" ? this.candles1m : tf === "5m" ? this.candles5m : this.candles15m;
+  getCandles(tf: "1m" | "5m" | "15m" | "1h", count = 200): Candle[] {
+    const src = tf === "1m" ? this.candles1m : tf === "5m" ? this.candles5m : tf === "15m" ? this.candles15m : this.candles1h;
     return src.slice(-count);
   }
 

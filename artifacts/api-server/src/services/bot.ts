@@ -63,15 +63,11 @@ interface OpenTrade {
 }
 
 interface ScoreBreakdown {
-  trend: number;
-  volatility: number;
-  timing: number;
-  pullback: number;
-  risk: number;
+  c1: number;
+  c2: number;
+  c3: number;
   total: number;
   direction: string;
-  trendDirection: string;
-  bandTouched: string;
 }
 
 class BotManager {
@@ -292,70 +288,54 @@ class BotManager {
     }
 
     // Run scoring engine
-    const candles5m = derivService.getCandles("5m", 100);
+    const candles5m  = derivService.getCandles("5m", 100);
     const candles15m = derivService.getCandles("15m", 60);
+    const candles1h  = derivService.getCandles("1h", 120);
 
-    const result = score(
-      candles1m, candles5m, candles15m,
-      state.dailyPnl, peak, balance,
-      state.consecutiveLosses
-    );
+    const result = score(candles1h, candles15m, candles5m);
 
     if (!result) {
-      const loaded = candles15m.length;
       state.pauseReason = null;
       state.currentScore = null;
       this.broadcastToUser(userId, "scores", {
         loading: true,
         message: "Gathering market data...",
-        candlesLoaded: loaded
+        candlesLoaded: candles1h.length,
+        candlesNeeded: 55,
       });
       this.broadcastBotEvent(userId, state);
       return;
     }
 
     state.currentScore = result.total;
-    state.rangeContext = result.rangeContext;
-    state.spikeDetected = result.spikeDetected;
-    state.consolidationDetected = result.consolidationDetected;
+    state.rangeContext = null;
+    state.spikeDetected = false;
+    state.consolidationDetected = false;
     state.lastScoreResult = result;
     state.scoreBreakdown = {
-      trend: result.trend,
-      volatility: result.volatility,
-      timing: result.timing,
-      pullback: result.pullback,
-      risk: result.risk,
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
       total: result.total,
       direction: result.direction,
-      trendDirection: result.trendDirection,
-      bandTouched: result.bandTouched,
     };
 
     // Broadcast scores via SSE
     this.broadcastToUser(userId, "scores", {
       total: result.total,
-      trend: result.trend,
-      volatility: result.volatility,
-      timing: result.timing,
-      pullback: result.pullback,
-      risk: result.risk,
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
       signal: result.direction,
       direction: result.direction,
       loading: false,
-      ema9: result.ema9,
-      ema21: result.ema21,
-      adx: result.adx,
-      rsi: result.rsi,
-      bbUpper: result.bbUpper,
-      bbLower: result.bbLower,
-      stochK: result.stochK,
-      macdHistogram: result.macdHistogram,
-      rangeContext: result.rangeContext,
-      consolidation: result.consolidationDetected,
-      spikeDetected: result.spikeDetected,
-      trendDirection: result.trendDirection,
-      bandTouched: result.bandTouched,
-      pullbackZone: result.pullbackZoneActive,
+      ema20_1h: result.ema20_1h,
+      ema50_1h: result.ema50_1h,
+      ema9_15m: result.ema9_15m,
+      ema21_15m: result.ema21_15m,
+      adx15m: result.adx15m,
+      rsi5m: result.rsi5m,
+      ema21_5m: result.ema21_5m,
       rejectionReason: null,
     });
 
@@ -369,13 +349,13 @@ class BotManager {
 
     await db.insert(signalLogTable).values({
       id: signalId, userId, strategyId: strategy.id, timestamp: now,
-      scoreTotal: result.total, scoreTrend: result.trend, scoreVolatility: result.volatility,
-      scoreTiming: result.timing, scorePullback: result.pullback, scoreRisk: result.risk,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
       direction: result.direction, action, rejectionReason,
-      ema9: result.ema9, ema21: result.ema21, rsi: result.rsi,
-      rangeContext: result.rangeContext, sessionName: currentSession?.name || null,
-      consolidationDetected: result.consolidationDetected ? 1 : 0,
-      spikeDetected: result.spikeDetected ? 1 : 0,
+      ema9: result.ema9_15m, ema21: result.ema21_15m, rsi: result.rsi5m,
+      rangeContext: null, sessionName: currentSession?.name || null,
+      consolidationDetected: 0,
+      spikeDetected: 0,
     });
 
     if (action !== "executed" || result.direction === "NONE") {
@@ -437,9 +417,9 @@ class BotManager {
     await db.insert(tradesTable).values({
       id: tradeId, userId, strategyId: strategy.id,
       direction: result.direction, entryPrice, stake,
-      scoreTotal: result.total, scoreTrend: result.trend,
-      scoreVolatility: result.volatility, scoreTiming: result.timing,
-      scorePullback: result.pullback, scoreRisk: result.risk,
+      scoreTotal: result.total, scoreTrend: result.c1,
+      scoreVolatility: result.c2, scoreTiming: result.c3,
+      scorePullback: 0, scoreRisk: 0,
       isCopyTrade: 0, isPaper: user.tradingMode === "paper" ? 1 : 0,
       isDemo: isDemo ? 1 : 0,
       symbol: "R_75",
@@ -447,9 +427,9 @@ class BotManager {
       stopLoss, takeProfit1, takeProfit2,
       recoveryModeActive: state.recoveryModeActive ? 1 : 0,
       winStreakCautionActive: state.winStreakCautionActive ? 1 : 0,
-      sessionName, rangeContext: result.rangeContext,
+      sessionName, rangeContext: null,
       openedAt: now,
-      rsiAtEntry: result.rsi, stochAtEntry: result.stochK, macdAtEntry: result.macdHistogram,
+      rsiAtEntry: result.rsi5m, stochAtEntry: null, macdAtEntry: null,
     });
 
     state.openTrade = {

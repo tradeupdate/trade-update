@@ -32,7 +32,7 @@ import { useSSE } from "@/hooks/use-sse";
 type Timeframe = "1m" | "5m" | "15m";
 type TradeFilter = "all" | "win" | "loss" | "paper" | "copy";
 
-function ScoreBar({ label, value, max = 12 }: { label: string; value: number; max?: number }) {
+function ScoreBar({ label, value, max = 10 }: { label: string; value: number; max?: number }) {
   const pct = Math.min(100, (value / max) * 100);
   const color = pct >= 66 ? "#00D4A4" : pct >= 33 ? "#FFB347" : "#FF4060";
   return (
@@ -899,10 +899,10 @@ export default function Dashboard() {
               <Card className="bg-card border-border p-3 text-center">
                 <div className="text-xs text-text-secondary mb-1">AI Score</div>
                 <div className={`font-bold text-sm ${
-                  (sse.scores?.total ?? 0) >= 38 ? "text-primary" :
-                  (sse.scores?.total ?? 0) >= 25 ? "text-yellow-400" : "text-text-secondary"
+                  (sse.scores?.total ?? 0) >= 20 ? "text-primary" :
+                  (sse.scores?.total ?? 0) >= 15 ? "text-yellow-400" : "text-text-secondary"
                 }`}>
-                  {sse.scores?.loading ? "…" : sse.scores?.total != null ? `${sse.scores.total.toFixed(1)}/50` : "—"}
+                  {sse.scores?.loading ? "…" : sse.scores?.total != null ? `${sse.scores.total.toFixed(1)}/30` : "—"}
                 </div>
               </Card>
             </div>
@@ -925,105 +925,72 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Score bars */}
+                {/* Score bars — c1 (1h Trend) · c2 (15m Confirm) · c3 (5m Entry) */}
                 <div className="space-y-2 mb-4">
-                  <ScoreBar label="Trend" value={sse.scores.trend ?? 0} max={12} />
-                  <ScoreBar label="Volatility" value={sse.scores.volatility ?? 0} max={10} />
-                  <ScoreBar label="Timing" value={sse.scores.timing ?? 0} max={10} />
-                  <ScoreBar label="Pullback" value={sse.scores.pullback ?? 0} max={10} />
-                  <ScoreBar label="Risk" value={sse.scores.risk ?? 0} max={10} />
+                  <ScoreBar label="1h Trend" value={sse.scores.c1 ?? 0} max={10} />
+                  <ScoreBar label="15m Conf" value={sse.scores.c2 ?? 0} max={10} />
+                  <ScoreBar label="5m Entry" value={sse.scores.c3 ?? 0} max={10} />
                 </div>
 
                 {/* Total score bar */}
                 <div className="mb-4">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-text-secondary">Total Score</span>
-                    <span className={`font-bold font-mono ${(sse.scores.total ?? 0) >= 38 ? "text-primary" : "text-text-secondary"}`}>
-                      {(sse.scores.total ?? 0).toFixed(1)} / 50
+                    <span className={`font-bold font-mono ${(sse.scores.total ?? 0) >= 20 ? "text-primary" : "text-text-secondary"}`}>
+                      {(sse.scores.total ?? 0).toFixed(1)} / 30
                     </span>
                   </div>
                   <div className="h-2 bg-border rounded-full overflow-hidden">
                     <div
                       className="h-full rounded-full transition-all duration-500"
                       style={{
-                        width: `${Math.min(100, ((sse.scores.total ?? 0) / 50) * 100)}%`,
-                        backgroundColor: (sse.scores.total ?? 0) >= 38 ? "#00D4A4" : (sse.scores.total ?? 0) >= 25 ? "#FFB347" : "#FF4060"
+                        width: `${Math.min(100, ((sse.scores.total ?? 0) / 30) * 100)}%`,
+                        backgroundColor: (sse.scores.total ?? 0) >= 20 ? "#00D4A4" : (sse.scores.total ?? 0) >= 15 ? "#FFB347" : "#FF4060"
                       }}
                     />
                   </div>
                   <div className="flex justify-between text-[10px] text-text-secondary mt-1">
                     <span>0</span>
-                    <span className="text-primary">38 threshold</span>
-                    <span>50</span>
+                    <span className="text-primary">20 threshold</span>
+                    <span>30</span>
                   </div>
                 </div>
 
                 {/* Indicator grid */}
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">RSI(14)</span>
-                    <span className={`font-mono font-medium ${
-                      (sse.scores.rsi ?? 50) < 30 ? "text-primary" :
-                      (sse.scores.rsi ?? 50) > 70 ? "text-accent-red" : "text-foreground"
-                    }`}>{sse.scores.rsi?.toFixed(1) ?? "—"}</span>
+                    <span className="text-text-secondary">EMA20 (1h)</span>
+                    <span className="font-mono">{sse.scores.ema20_1h?.toFixed(2) ?? "—"}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">ADX</span>
-                    <span className={`font-mono font-medium ${(sse.scores.adx ?? 0) >= 25 ? "text-primary" : "text-text-secondary"}`}>
-                      {sse.scores.adx?.toFixed(1) ?? "—"}
+                    <span className="text-text-secondary">EMA50 (1h)</span>
+                    <span className="font-mono">{sse.scores.ema50_1h?.toFixed(2) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">EMA9 (15m)</span>
+                    <span className="font-mono">{sse.scores.ema9_15m?.toFixed(2) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">EMA21 (15m)</span>
+                    <span className="font-mono">{sse.scores.ema21_15m?.toFixed(2) ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">ADX (15m)</span>
+                    <span className={`font-mono font-medium ${(sse.scores.adx15m ?? 0) >= 20 ? "text-primary" : "text-text-secondary"}`}>
+                      {sse.scores.adx15m?.toFixed(1) ?? "—"}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">Stoch %K</span>
+                    <span className="text-text-secondary">RSI (5m)</span>
                     <span className={`font-mono font-medium ${
-                      (sse.scores.stochK ?? 50) < 20 ? "text-primary" :
-                      (sse.scores.stochK ?? 50) > 80 ? "text-accent-red" : "text-foreground"
-                    }`}>{sse.scores.stochK?.toFixed(1) ?? "—"}</span>
+                      (sse.scores.rsi5m ?? 50) < 40 ? "text-primary" :
+                      (sse.scores.rsi5m ?? 50) > 60 ? "text-accent-red" : "text-foreground"
+                    }`}>{sse.scores.rsi5m?.toFixed(1) ?? "—"}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">MACD Hist</span>
-                    <span className={`font-mono font-medium ${(sse.scores.macdHistogram ?? 0) >= 0 ? "text-primary" : "text-accent-red"}`}>
-                      {sse.scores.macdHistogram?.toFixed(4) ?? "—"}
-                    </span>
+                    <span className="text-text-secondary">EMA21 (5m)</span>
+                    <span className="font-mono">{sse.scores.ema21_5m?.toFixed(2) ?? "—"}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-secondary">EMA9</span>
-                    <span className="font-mono">{sse.scores.ema9?.toFixed(1) ?? "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-secondary">EMA21</span>
-                    <span className="font-mono">{sse.scores.ema21?.toFixed(1) ?? "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-secondary">Trend</span>
-                    <span className={`font-medium ${
-                      sse.scores.trendDirection === "BULL" ? "text-primary" :
-                      sse.scores.trendDirection === "BEAR" ? "text-accent-red" : "text-text-secondary"
-                    }`}>{sse.scores.trendDirection ?? "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-secondary">Band</span>
-                    <span className={`font-medium ${
-                      sse.scores.bandTouched === "LOWER" ? "text-primary" :
-                      sse.scores.bandTouched === "UPPER" ? "text-accent-red" : "text-text-secondary"
-                    }`}>{sse.scores.bandTouched ?? "NONE"}</span>
-                  </div>
-                </div>
-
-                {/* Context flags */}
-                <div className="flex gap-2 mt-3 flex-wrap">
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sse.scores.pullbackZone ? "bg-primary/20 text-primary" : "bg-border text-text-secondary"}`}>
-                    Pullback Zone
-                  </span>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sse.scores.consolidation ? "bg-yellow-500/20 text-yellow-400" : "bg-border text-text-secondary"}`}>
-                    Consolidation
-                  </span>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sse.scores.spikeDetected ? "bg-accent-red/20 text-accent-red" : "bg-border text-text-secondary"}`}>
-                    Spike
-                  </span>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full bg-border text-text-secondary`}>
-                    {sse.scores.rangeContext ?? "middle"}
-                  </span>
                 </div>
 
                 {sse.scores.rejectionReason && (
@@ -1040,7 +1007,7 @@ export default function Dashboard() {
                 <div>
                   <div className="text-sm font-medium">Gathering market data</div>
                   <div className="text-xs text-text-secondary">
-                    {sse.scores.candlesLoaded ?? 0} / 50 candles needed
+                    {sse.scores.candlesLoaded ?? 0} / 55 1h candles needed
                   </div>
                 </div>
               </Card>

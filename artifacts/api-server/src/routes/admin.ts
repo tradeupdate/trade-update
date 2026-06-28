@@ -480,6 +480,7 @@ router.post("/backtest/run", async (req, res) => {
       regimeStats: result.regimeStats,
       scoreHistogram: result.scoreHistogram,
       partialExitStats: result.partialExitStats,
+      trades: result.trades,
     });
   } catch (err) {
     logger.error({ err }, "Backtest error");
