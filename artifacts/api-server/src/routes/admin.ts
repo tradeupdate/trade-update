@@ -13,6 +13,7 @@ import { botManager } from "../services/bot.js";
 import { sendApprovedEmail, sendRejectedEmail } from "../services/email.js";
 import { derivService } from "../services/deriv.js";
 import { runDeterministicBacktest, deleteCacheFile, getCacheStatus } from "../services/backtest-engine.js";
+import { runSwingBacktest } from "../services/swing-backtest-engine.js";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
@@ -421,12 +422,22 @@ router.post("/backtest/run", async (req, res) => {
       sessionEndHour: sessionEndHour ?? 20,
     };
 
-    const result = await runDeterministicBacktest(
-      strategyId, config, from, to,
-      req.user!.userId,
-      !!refreshData,
-      5000,
-    );
+    let result: Awaited<ReturnType<typeof runDeterministicBacktest>> | Awaited<ReturnType<typeof runSwingBacktest>>;
+
+    if (strategy.type === "swing") {
+      const swingConfig = {
+        scoreThreshold: strategy.scoreThreshold ?? 20,
+        maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+        stopMultiplier: strategy.stopMultiplier ?? 2.0,
+        tp1Multiplier: strategy.tp1Multiplier ?? 2.0,
+        tp2Multiplier: strategy.tp2Multiplier ?? 4.0,
+        maxTradesDay: strategy.maxTradesDay ?? 3,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 2,
+      };
+      result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000);
+    } else {
+      result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, 5000);
+    }
 
     const id = randomUUID();
     await db.insert(backtestResultsTable).values({
@@ -455,6 +466,7 @@ router.post("/backtest/run", async (req, res) => {
       createdAt: now,
     });
 
+    const isSwing = strategy.type === "swing";
     res.json({
       id,
       runId: result.runId,
@@ -476,11 +488,12 @@ router.post("/backtest/run", async (req, res) => {
       dataSource: result.dataSource,
       dateFrom: from,
       dateTo: to,
-      featureImportance: result.featureImportance,
-      regimeStats: result.regimeStats,
-      scoreHistogram: result.scoreHistogram,
+      featureImportance: isSwing ? null : (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).featureImportance,
+      regimeStats: isSwing ? null : (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).regimeStats,
+      scoreHistogram: isSwing ? null : (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).scoreHistogram,
       partialExitStats: result.partialExitStats,
       trades: result.trades,
+      strategyType: strategy.type,
     });
   } catch (err) {
     logger.error({ err }, "Backtest error");

@@ -1,0 +1,536 @@
+PROMPT 1 — V75 SWING STRATEGY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build the V75 Swing strategy completely from 
+scratch as a new independent strategy in the 
+TradeUpdate platform. This strategy is designed 
+for longer-hold trend trades on V75 using 
+breakout-retest entries and two-stage position 
+building. It is completely separate from 
+V75 Sniper and V75 Reversal.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — STRATEGY DATABASE RECORD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INSERT into strategies table:
+name: "V75 Swing"
+description: "Longer-hold trend strategy using 
+breakout-retest entries and two-stage position 
+building. Holds trades up to 6 hours across 
+session transitions. Designed to capture large 
+V75 directional moves of 300-600 pips."
+type: "swing"
+status: "active"
+entry_timeframe: "15m"
+signal_timeframe: "1h"
+trend_timeframe: "4h"
+sessions_enabled: ["asian","london","overlap","ny"]
+score_threshold: 20
+max_trades_day: 3
+max_trades_hour: 1
+consecutive_loss_stop: 2
+max_risk_percent: 1.0
+stop_multiplier: 2.0
+tp1_multiplier: 2.0
+tp2_multiplier: 4.0
+counter_trend_enabled: 0
+first_candle_rule: 0
+spike_filter_enabled: 1
+spike_filter_multiplier: 4.0
+momentum_extension_enabled: 1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — BUILD 4H CANDLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add 4h candle building to the backtest engine.
+Build from 1h candles:
+
+function build4hCandles(candles1h: Candle[]): Candle[] {
+  const grouped: { [key: number]: Candle[] } = {}
+  
+  candles1h.forEach(candle => {
+    const boundary = Math.floor(candle.time / 14400) * 14400
+    if (!grouped[boundary]) grouped[boundary] = []
+    grouped[boundary].push(candle)
+  })
+  
+  return Object.entries(grouped)
+    .filter(([_, g]) => g.length > 0)
+    .map(([boundary, group]) => {
+      const sorted = group.sort((a,b) => a.time - b.time)
+      return {
+        time: parseInt(boundary),
+        open: sorted[0].open,
+        high: Math.max(...sorted.map(c => c.high)),
+        low: Math.min(...sorted.map(c => c.low)),
+        close: sorted[sorted.length-1].close
+      }
+    })
+    .sort((a,b) => a.time - b.time)
+}
+
+Need minimum 10 x 4h candles before swing 
+scoring can begin.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — CONSOLIDATION RANGE DETECTOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The swing strategy only enters after a 
+consolidation range breaks out and retests.
+This detector identifies active ranges.
+
+function detectConsolidationRange(
+  candles1h: Candle[]
+): ConsolidationRange | null {
+
+  const last20 = candles1h.slice(-20)
+  
+  // Calculate how tight the range is
+  const highs = last20.map(c => c.high)
+  const lows = last20.map(c => c.low)
+  const rangeHigh = Math.max(...highs)
+  const rangeLow = Math.min(...lows)
+  const rangeSize = rangeHigh - rangeLow
+  const midpoint = (rangeHigh + rangeLow) / 2
+  const rangePct = rangeSize / midpoint * 100
+
+  // Count candles within the range boundaries
+  const candlesInRange = last20.filter(c =>
+    c.high <= rangeHigh * 1.001 &&
+    c.low >= rangeLow * 0.999
+  ).length
+
+  // Consolidation confirmed when:
+  // Range is less than 1.5% of price
+  // At least 12 of 20 candles are within range
+  const isConsolidating = rangePct < 1.5 && 
+                          candlesInRange >= 12
+
+  if (!isConsolidating) return null
+
+  // Calculate range duration
+  const duration = last20.length
+
+  console.log(`Consolidation detected:
+    High: ${rangeHigh}
+    Low: ${rangeLow}  
+    Size: ${rangeSize.toFixed(2)} pips
+    Pct: ${rangePct.toFixed(3)}%
+    Candles in range: ${candlesInRange}/20`)
+
+  return {
+    high: rangeHigh,
+    low: rangeLow,
+    midpoint,
+    size: rangeSize,
+    duration,
+    confirmed: true
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — BREAKOUT DETECTOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After consolidation is detected, watch for
+a clean breakout beyond the range.
+
+function detectBreakout(
+  candles1h: Candle[],
+  range: ConsolidationRange
+): BreakoutResult | null {
+
+  const lastCandle = candles1h[candles1h.length - 1]
+  const prevCandle = candles1h[candles1h.length - 2]
+
+  // Bullish breakout: close above range high
+  // with body (not just wick) above range high
+  const bullBreakout = 
+    lastCandle.close > range.high &&
+    lastCandle.open > range.high * 0.998 &&
+    lastCandle.close > prevCandle.close &&
+    // Breakout candle must be larger than average
+    (lastCandle.high - lastCandle.low) > 
+    (range.size * 0.3)
+
+  // Bearish breakout: close below range low
+  const bearBreakout =
+    lastCandle.close < range.low &&
+    lastCandle.open < range.low * 1.002 &&
+    lastCandle.close < prevCandle.close &&
+    (lastCandle.high - lastCandle.low) >
+    (range.size * 0.3)
+
+  if (bullBreakout) {
+    console.log(`BULL BREAKOUT detected at 
+      ${lastCandle.close} above range high 
+      ${range.high}`)
+    return {
+      direction: 'BUY',
+      breakoutPrice: lastCandle.close,
+      retestLevel: range.high,
+      stopLevel: range.low,
+      breakoutCandle: lastCandle
+    }
+  }
+
+  if (bearBreakout) {
+    console.log(`BEAR BREAKOUT detected at 
+      ${lastCandle.close} below range low 
+      ${range.low}`)
+    return {
+      direction: 'SELL',
+      breakoutPrice: lastCandle.close,
+      retestLevel: range.low,
+      stopLevel: range.high,
+      breakoutCandle: lastCandle
+    }
+  }
+
+  return null
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — RETEST DETECTOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After breakout, wait for price to pull back
+and retest the broken level before entering.
+
+function detectRetest(
+  currentPrice: number,
+  breakout: BreakoutResult,
+  candles15m: Candle[]
+): RetestResult {
+
+  const retestLevel = breakout.retestLevel
+  const direction = breakout.direction
+
+  // How close is price to the retest level?
+  const distanceFromLevel = Math.abs(
+    currentPrice - retestLevel
+  )
+  const distancePct = distanceFromLevel / 
+    retestLevel * 100
+
+  // Price is at retest level when within 0.1%
+  const atRetestLevel = distancePct < 0.1
+
+  // Check for rejection from retest level on 15m
+  const last3candles15m = candles15m.slice(-3)
+  let rejectionConfirmed = false
+
+  if (direction === 'BUY' && atRetestLevel) {
+    // For buy retest: price should touch level
+    // then close ABOVE it on 15m
+    const lastCandle = last3candles15m[
+      last3candles15m.length - 1
+    ]
+    rejectionConfirmed = 
+      lastCandle.low <= retestLevel * 1.001 &&
+      lastCandle.close > retestLevel &&
+      lastCandle.close > lastCandle.open
+      // Bullish close after touching level
+  }
+
+  if (direction === 'SELL' && atRetestLevel) {
+    const lastCandle = last3candles15m[
+      last3candles15m.length - 1
+    ]
+    rejectionConfirmed =
+      lastCandle.high >= retestLevel * 0.999 &&
+      lastCandle.close < retestLevel &&
+      lastCandle.close < lastCandle.open
+      // Bearish close after touching level
+  }
+
+  return {
+    atLevel: atRetestLevel,
+    rejected: rejectionConfirmed,
+    distancePct,
+    readyToEnter: atRetestLevel && rejectionConfirmed
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — SWING SCORING ENGINE (0-25 POINTS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+COMPONENT 1 — 4H TREND DIRECTION (0-10)
+The dominant trend that the swing trade 
+must follow. Never trade against this.
+
+function score4hTrend(candles4h, direction):
+  closes = candles4h.map(c => c.close)
+  ema20_4h = calculateEMA(closes, 20)
+  ema50_4h = calculateEMA(closes, 50)
+  currentPrice = closes[closes.length - 1]
+  
+  // Calculate slope of EMA20
+  ema20_3bars_ago = calculateEMA(
+    closes.slice(0, -3), 20
+  )
+  ema20Slope = ema20_4h - ema20_3bars_ago
+  
+  if direction === 'BUY':
+    if ema20_4h > ema50_4h AND 
+       currentPrice > ema20_4h AND
+       ema20Slope > 0:
+      return 10 // Perfect uptrend
+    if ema20_4h > ema50_4h AND
+       currentPrice > ema50_4h:
+      return 7  // Uptrend, price slightly below EMA20
+    if ema20_4h > ema50_4h:
+      return 4  // Weak uptrend signal
+    return 0    // Downtrend — no BUY
+  
+  if direction === 'SELL':
+    if ema20_4h < ema50_4h AND
+       currentPrice < ema20_4h AND
+       ema20Slope < 0:
+      return 10
+    if ema20_4h < ema50_4h AND
+       currentPrice < ema50_4h:
+      return 7
+    if ema20_4h < ema50_4h:
+      return 4
+    return 0
+
+HARD RULE: Score 0 on 4h = NO SWING TRADE.
+
+COMPONENT 2 — 1H MOMENTUM (0-10)
+Confirms the trend has momentum on 1h.
+
+function score1hMomentum(candles1h, direction):
+  closes1h = candles1h.map(c => c.close)
+  ema9_1h = calculateEMA(closes1h, 9)
+  ema21_1h = calculateEMA(closes1h, 21)
+  rsi_1h = calculateRSI(candles1h, 14)
+  adx_1h = calculateADX(candles1h, 14)
+  
+  if direction === 'BUY':
+    trendAligned = ema9_1h > ema21_1h
+    momentumHealthy = rsi_1h > 40 AND rsi_1h < 65
+    // RSI not overbought on entry
+    trendStrong = adx_1h > 20
+    
+    if trendAligned AND momentumHealthy AND 
+       trendStrong:
+      return 10
+    if trendAligned AND trendStrong:
+      return 7
+    if trendAligned:
+      return 4
+    return 0
+    
+  if direction === 'SELL':
+    trendAligned = ema9_1h < ema21_1h
+    momentumHealthy = rsi_1h > 35 AND rsi_1h < 60
+    trendStrong = adx_1h > 20
+    
+    if trendAligned AND momentumHealthy AND 
+       trendStrong:
+      return 10
+    if trendAligned AND trendStrong:
+      return 7
+    if trendAligned:
+      return 4
+    return 0
+
+COMPONENT 3 — BREAKOUT QUALITY (0-5)
+Scores the quality of the initial breakout.
+
+function scoreBreakoutQuality(
+  breakout: BreakoutResult,
+  range: ConsolidationRange
+): number {
+
+  // How decisive was the breakout candle?
+  const breakoutCandle = breakout.breakoutCandle
+  const candleBody = Math.abs(
+    breakoutCandle.close - breakoutCandle.open
+  )
+  const candleRange = 
+    breakoutCandle.high - breakoutCandle.low
+  const bodyRatio = candleBody / candleRange
+
+  // Strong body = decisive breakout
+  if bodyRatio > 0.7 AND 
+     candleRange > range.size * 0.5:
+    return 5 // Strong decisive breakout
+  if bodyRatio > 0.5:
+    return 3 // Moderate breakout
+  if bodyRatio > 0.3:
+    return 2 // Weak breakout
+  return 1   // Very weak — wick dominated
+}
+
+TOTAL SWING SCORE = C1 + C2 + C3 (max 25)
+THRESHOLD = 20/25
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — TWO-STAGE ENTRY EXECUTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STAGE 1 ENTRY (when retest confirmed):
+stake1 = (balance * 0.01) / 2
+// Half the normal 1% risk for first entry
+Enter at current market price
+Set initial stop beyond consolidation range:
+  If BUY: stop = range.low - (range.size * 0.1)
+  If SELL: stop = range.high + (range.size * 0.1)
+stopDistance = |entry - stop|
+
+Set TP1 = entry ± (stopDistance * 2.0)
+Set TP2 = entry ± (stopDistance * 4.0)
+
+Record stage1Entry object:
+{
+  entryPrice, stake: stake1,
+  stopLoss, tp1, tp2,
+  stage: 1,
+  secondStageAdded: false,
+  openedAt: candle.time
+}
+
+STAGE 2 ENTRY TRIGGER:
+Two scenarios trigger stage 2:
+
+Scenario A — Second pullback occurs:
+If price pulls back to within 0.15% of 
+retestLevel before moving 1× stopDistance:
+  Add remaining stake2 at current price
+  Average the two entry prices
+  Update trade record with combined position
+
+Scenario B — No second pullback:
+If price moves 1× stopDistance away from 
+stage 1 entry WITHOUT retracing:
+  Add remaining stake2 at market price
+  This ensures full position is deployed
+  on confirmed momentum
+
+Stage 2 stake:
+stake2 = (balance * 0.01) / 2
+Combined total risk = balance * 0.01 (1%)
+
+After stage 2 added:
+Update averageEntry = (entry1 + entry2) / 2
+Update stop to remain at original level
+Recalculate TP1 and TP2 from averageEntry
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — SESSION TRANSITION MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SESSION END PROTECTION:
+Check at 15:00 UTC (London/NY overlap end):
+  If trade profit >= 1× stopDistance:
+    Move stop to break even
+    Let trade continue running
+  If trade profit < 1× stopDistance OR at loss:
+    Close trade immediately at market
+    Take whatever profit or loss exists
+    Log: "Session-end closure — 
+    insufficient profit to hold overnight"
+
+Check at 10:00 UTC (London open end):
+  Same logic — protect profitable trades,
+  close marginal trades
+
+SESSION OPEN BLACKOUT ZONES:
+No new swing entries during:
+06:45 - 07:15 UTC (London open zone)
+12:45 - 13:15 UTC (NY open zone)
+
+If a signal fires during blackout:
+Log it as "Signal during blackout — skipped"
+Do NOT enter the trade
+Wait until 07:15 or 13:15 to re-evaluate
+
+MAXIMUM HOLD TIME:
+6 hours from entry regardless of profit/loss
+At 6-hour mark:
+  If profitable: close at market, take profit
+  If at loss: close at market, take loss
+  Log: "Maximum hold time reached"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 9 — SWING STOP AND TP RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STOP LOSS:
+Placed beyond the consolidation range
+with 10% buffer:
+BUY: stop = rangeLow - (rangeSize * 0.1)
+SELL: stop = rangeHigh + (rangeSize * 0.1)
+
+Minimum stop distance: 80 pips
+Maximum stop distance: 350 pips
+(wider than Sniper because swing trades 
+need room to breathe through retracements)
+
+If calculated stop > 350 pips: reject trade
+Log: "Range too wide for swing entry"
+
+TAKE PROFITS:
+TP1 = entry ± (stopDistance * 2.0)
+TP2 = entry ± (stopDistance * 4.0)
+
+At TP1: close 50% of position
+Move stop to break even + 5 pip buffer
+Let remaining 50% run to TP2
+
+MOMENTUM EXTENSION at TP2:
+Check these conditions:
+4h EMA20 still sloping in trade direction AND
+1h RSI not yet at extreme (>75 or <25) AND
+ADX on 1h still above 22
+
+If all true: switch to trailing stop
+Trail by 2× ATR on 1h timeframe
+Continue until conditions break or 6h max
+
+BREAK EVEN:
+Trigger at 1.5× stop distance in profit
+(later than Sniper because swing trades 
+have larger natural retracements)
+Move stop to entry + 5 pips (BUY)
+or entry - 5 pips (SELL)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 10 — SWING BACKTEST CONFIGURATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create swingtest100 account:
+username: "swingtest100"
+password: "Swing100!"
+balance: $5,000
+profile: safe
+strategy: V75 Swing
+mode: paper
+
+Run backtest:
+Account: swingtest100
+Period: December 31 2025 to May 30 2026
+(same period as Sniper for comparison)
+
+Expected characteristics:
+Trades: 15-40 over 5 months
+(fewer than Sniper because swing entries
+require more conditions to align)
+Average duration: 2-4 hours
+Win rate target: 55-65%
+Average win: larger than Sniper 
+(wider TP multipliers)
+Average loss: larger than Sniper
+(wider stops)
+Profit factor target: 1.4+
+
+Log every consolidation detected,
+every breakout detected,
+every retest confirmed,
+every stage 1 and stage 2 entry.

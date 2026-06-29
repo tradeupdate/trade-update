@@ -8,6 +8,10 @@ import { eq, and, gte, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { derivService } from "./deriv.js";
 import { score, type ScoreResult } from "./scoring.js";
+import {
+  detectConsolidationRange, detectBreakout, scoreSwing, build4hCandles,
+  type ConsolidationRange, type BreakoutResult,
+} from "./swing-scoring.js";
 import { getCurrentSession, getNextSession, isInSession, SESSIONS } from "./sessions.js";
 import { logger } from "../lib/logger.js";
 
@@ -44,6 +48,10 @@ export interface BotState {
   lastTradeTime: number | null;
   spikeWaitCandles: number;
   hourlyTradeReset: number;
+  // Swing-specific state
+  swingConsolidation: ConsolidationRange | null;
+  swingBreakout: BreakoutResult | null;
+  swingLastEval1hTime: number;
 }
 
 interface OpenTrade {
@@ -60,6 +68,14 @@ interface OpenTrade {
   partialClosed: boolean;
   momentumExtensionActive: boolean;
   openedAt: number;
+  // Swing-specific (optional)
+  swingTrade?: boolean;
+  stopDistance?: number;
+  retestLevel?: number;
+  rangeHigh?: number;
+  rangeLow?: number;
+  stage2Added?: boolean;
+  stage1Stake?: number;
 }
 
 interface ScoreBreakdown {
@@ -287,7 +303,13 @@ class BotManager {
       return;
     }
 
-    // Run scoring engine
+    // ── SWING strategy routing ────────────────────────────────────────────
+    if (strategy.type === "swing") {
+      await this.evaluateSwingSignal(userId, user, strategy, state, now, currentSession);
+      return;
+    }
+
+    // Run scoring engine (sniper / reversal)
     const candles5m  = derivService.getCandles("5m", 100);
     const candles15m = derivService.getCandles("15m", 60);
     const candles1h  = derivService.getCandles("1h", 120);
@@ -366,6 +388,162 @@ class BotManager {
 
     state.pauseReason = null;
     await this.executeTrade(userId, user, strategy, result, currentSession?.name || null, state);
+  }
+
+  // ── Swing blackout zone check ─────────────────────────────────────────────
+  private isSwingBlackout(): boolean {
+    const now = new Date();
+    const h = now.getUTCHours(), m = now.getUTCMinutes();
+    const t = h * 60 + m;
+    return (t >= 6 * 60 + 45 && t <= 7 * 60 + 15) || (t >= 12 * 60 + 45 && t <= 13 * 60 + 15);
+  }
+
+  // ── Swing signal evaluation ───────────────────────────────────────────────
+  private async evaluateSwingSignal(
+    userId: string,
+    user: any,
+    strategy: any,
+    state: BotState,
+    now: number,
+    currentSession: ReturnType<typeof getCurrentSession>
+  ) {
+    const candles1h  = derivService.getCandles("1h", 120);
+    const candles15m = derivService.getCandles("15m", 60);
+    const candles4h  = build4hCandles(candles1h);
+
+    if (candles1h.length < 55) {
+      state.pauseReason = null;
+      this.broadcastToUser(userId, "scores", { loading: true, message: "Gathering swing candle data...", candlesLoaded: candles1h.length, candlesNeeded: 55 });
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // Update swing state when a new 1h candle closes
+    const latest1hTime = candles1h[candles1h.length - 1]?.time ?? 0;
+    if (latest1hTime !== state.swingLastEval1hTime) {
+      state.swingLastEval1hTime = latest1hTime;
+      if (!state.swingBreakout) {
+        if (!state.swingConsolidation) {
+          state.swingConsolidation = detectConsolidationRange(candles1h) ?? null;
+          if (state.swingConsolidation) {
+            logger.info({ userId }, `Swing: consolidation detected high=${state.swingConsolidation.high.toFixed(2)} low=${state.swingConsolidation.low.toFixed(2)}`);
+            this.logActivity(userId, `Swing: Consolidation detected — range ${state.swingConsolidation.low.toFixed(2)}-${state.swingConsolidation.high.toFixed(2)}`, "info").catch(() => {});
+          }
+        } else {
+          const newBreakout = detectBreakout(candles1h, state.swingConsolidation);
+          if (newBreakout) {
+            state.swingBreakout = newBreakout;
+            logger.info({ userId, dir: newBreakout.direction }, `Swing: breakout detected at ${newBreakout.breakoutPrice.toFixed(2)}`);
+            this.logActivity(userId, `Swing: Breakout ${newBreakout.direction} @ ${newBreakout.breakoutPrice.toFixed(2)} — watching for retest`, "info").catch(() => {});
+          } else {
+            // Recheck consolidation (range may have expanded/reset)
+            const fresh = detectConsolidationRange(candles1h);
+            if (!fresh) state.swingConsolidation = null;
+          }
+        }
+      }
+    }
+
+    // Score and check for entry
+    const threshold = strategy.scoreThreshold ?? 20;
+    const swingResult = scoreSwing(candles4h, candles1h, candles15m, state.swingConsolidation, state.swingBreakout, derivService.getLatestTick().price, threshold);
+
+    if (!swingResult) {
+      state.currentScore = null;
+      state.pauseReason = "Awaiting swing setup";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    state.currentScore = swingResult.total;
+    state.scoreBreakdown = { c1: swingResult.c1, c2: swingResult.c2, c3: swingResult.c3, total: swingResult.total, direction: swingResult.direction };
+
+    this.broadcastToUser(userId, "scores", {
+      total: swingResult.total,
+      c1: swingResult.c1, c2: swingResult.c2, c3: swingResult.c3,
+      signal: swingResult.direction,
+      loading: false,
+      ema20_1h: swingResult.ema20_4h,
+      ema50_1h: swingResult.ema50_4h,
+      ema9_15m: swingResult.ema9_1h,
+      ema21_15m: swingResult.ema21_1h,
+      adx15m: swingResult.adx1h,
+      rsi5m: swingResult.rsi1h,
+      rejectionReason: swingResult.direction === "NONE" ? (swingResult.total < threshold ? `Score ${swingResult.total} < ${threshold}` : "Awaiting retest") : null,
+    });
+
+    if (!swingResult.ready || swingResult.direction === "NONE") {
+      state.pauseReason = swingResult.consolidation ? (swingResult.breakout ? "Waiting for retest" : "Watching for breakout") : "Scanning for consolidation";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    if (this.isSwingBlackout()) {
+      state.pauseReason = "Swing blackout zone — waiting for window";
+      this.logActivity(userId, "Swing: Signal during blackout zone — skipped", "info").catch(() => {});
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // Execute swing Stage 1 entry
+    state.pauseReason = null;
+    const consolidation = state.swingConsolidation!;
+    const breakout = state.swingBreakout!;
+    const isBuy = swingResult.direction === "BUY";
+    const entryPrice = derivService.getLatestTick().price;
+    const stopDist = isBuy ? entryPrice - (consolidation.low - consolidation.size * 0.1) : (consolidation.high + consolidation.size * 0.1) - entryPrice;
+
+    const MIN_STOP = 80, MAX_STOP = 350;
+    if (stopDist < MIN_STOP || stopDist > MAX_STOP) {
+      state.pauseReason = `Stop distance ${stopDist.toFixed(0)} pip out of range ${MIN_STOP}-${MAX_STOP} — skipping`;
+      this.logActivity(userId, `Swing: ${state.pauseReason}`, "info").catch(() => {});
+      // Reset breakout — this setup is invalid
+      state.swingBreakout = null;
+      state.swingConsolidation = null;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    const balance = user.accountBalance || 5000;
+    const riskPct = (strategy.maxRiskPercent ?? 1.0) / 100;
+    const stage1Stake = Math.max(0.5, Math.round(balance * riskPct * 0.5 * 100) / 100);
+    const slPrice = isBuy ? consolidation.low - consolidation.size * 0.1 : consolidation.high + consolidation.size * 0.1;
+    const tp1 = isBuy ? entryPrice + stopDist * (strategy.tp1Multiplier ?? 2.0) : entryPrice - stopDist * (strategy.tp1Multiplier ?? 2.0);
+    const tp2 = isBuy ? entryPrice + stopDist * (strategy.tp2Multiplier ?? 4.0) : entryPrice - stopDist * (strategy.tp2Multiplier ?? 4.0);
+
+    const tradeId = randomUUID();
+    await db.insert(tradesTable).values({
+      id: tradeId, userId, strategyId: strategy.id,
+      direction: swingResult.direction, entryPrice, stake: stage1Stake,
+      scoreTotal: swingResult.total, scoreTrend: swingResult.c1, scoreVolatility: swingResult.c2, scoreTiming: swingResult.c3,
+      scorePullback: 0, scoreRisk: 0,
+      isCopyTrade: 0, isPaper: user.tradingMode === "paper" ? 1 : 0, isDemo: 0,
+      symbol: "R_75", tradingMode: user.tradingMode || "paper", status: "open",
+      stopLoss: slPrice, takeProfit1: tp1, takeProfit2: tp2,
+      recoveryModeActive: state.recoveryModeActive ? 1 : 0,
+      winStreakCautionActive: state.winStreakCautionActive ? 1 : 0,
+      sessionName: currentSession?.name || null, rangeContext: null,
+      openedAt: now, rsiAtEntry: swingResult.rsi1h, stochAtEntry: null, macdAtEntry: null,
+    });
+
+    state.openTrade = {
+      id: tradeId, direction: swingResult.direction, entryPrice, currentPrice: entryPrice,
+      stake: stage1Stake, pnl: 0, stopLoss: slPrice, takeProfit1: tp1, takeProfit2: tp2,
+      breakEvenMoved: false, partialClosed: false, momentumExtensionActive: false, openedAt: now,
+      swingTrade: true, stopDistance: stopDist, retestLevel: breakout.retestLevel,
+      rangeHigh: consolidation.high, rangeLow: consolidation.low, stage2Added: false, stage1Stake,
+    };
+    state.lastTradeTime = now;
+    state.lastSignalScore = swingResult.total;
+    state.lastSignalDirection = swingResult.direction;
+    // Reset swing state — breakout consumed
+    state.swingBreakout = null;
+    state.swingConsolidation = null;
+
+    this.broadcastToUser(userId, "trade", { action: "opened", trade: state.openTrade });
+    this.broadcastBotEvent(userId, state);
+    this.logActivity(userId, `Swing Stage 1: ${swingResult.direction} @ ${entryPrice.toFixed(2)} — SL ${slPrice.toFixed(2)} — TP1 ${tp1.toFixed(2)} — TP2 ${tp2.toFixed(2)} — Score ${swingResult.total}`, "info").catch(() => {});
+    logger.info({ userId, tradeId, dir: swingResult.direction, score: swingResult.total }, "Swing Stage 1 opened");
   }
 
   private calcATR(candles: Array<{ high: number; low: number; close: number }>, period = 14): number[] {
@@ -474,6 +652,73 @@ class BotManager {
 
       let shouldClose = false;
       let closeReason = "";
+      const elapsed = Math.floor(Date.now() / 1000) - trade.openedAt;
+
+      // ── Swing trade monitoring ─────────────────────────────────────────
+      if (trade.swingTrade) {
+        const swingStopDist = trade.stopDistance || stopDistance;
+
+        // Session end protection (15:00 UTC and 10:00 UTC)
+        const utcH = new Date().getUTCHours(), utcM = new Date().getUTCMinutes();
+        const isSessionEnd = (utcH === 15 || utcH === 10) && utcM === 0;
+        if (isSessionEnd) {
+          if (rawPips >= swingStopDist) {
+            // In good profit — move to break even
+            if (!trade.breakEvenMoved) {
+              trade.stopLoss = isBuy ? trade.entryPrice + 5 : trade.entryPrice - 5;
+              trade.breakEvenMoved = true;
+              this.broadcastToUser(userId, "trade", { action: "break_even", trade });
+              this.logActivity(userId, `Swing session-end: BE moved at ${utcH}:00 UTC — profit ${rawPips.toFixed(0)} pip`, "info").catch(() => {});
+            }
+          } else {
+            // Insufficient profit — close at market
+            shouldClose = true;
+            closeReason = "time_stop";
+            this.logActivity(userId, `Swing session-end: closing at ${utcH}:00 UTC — insufficient profit`, "info").catch(() => {});
+          }
+        }
+
+        if (!shouldClose) {
+          // SL hit
+          if (isBuy && currentPrice <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+          if (!isBuy && currentPrice >= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+        }
+
+        if (!shouldClose) {
+          // BE at 1.5× stop distance
+          if (!trade.breakEvenMoved && rawPips >= swingStopDist * 1.5) {
+            trade.stopLoss = isBuy ? trade.entryPrice + 5 : trade.entryPrice - 5;
+            trade.breakEvenMoved = true;
+            this.broadcastToUser(userId, "trade", { action: "break_even", trade });
+          }
+
+          // TP1 at 2× stop
+          if (!trade.partialClosed && rawPips >= swingStopDist * 2.0) {
+            trade.partialClosed = true;
+            if (!trade.breakEvenMoved) {
+              trade.stopLoss = isBuy ? trade.entryPrice + 5 : trade.entryPrice - 5;
+              trade.breakEvenMoved = true;
+            }
+            this.broadcastToUser(userId, "trade", { action: "partial_close", trade });
+          }
+
+          // TP2 at 4× stop
+          if (trade.partialClosed && rawPips >= swingStopDist * 4.0) {
+            shouldClose = true;
+            closeReason = "tp2";
+          }
+
+          // 6h max hold
+          if (elapsed > 6 * 3600) { shouldClose = true; closeReason = "time_stop"; }
+        }
+
+        if (shouldClose) {
+          await this.closeTrade(userId, state, trade, currentPrice, closeReason);
+        }
+        continue;
+      }
+
+      // ── Standard (sniper / reversal) trade monitoring ─────────────────
 
       // Stop loss
       if (isBuy && currentPrice <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
@@ -490,7 +735,6 @@ class BotManager {
         // TP1 partial close (profit >= 1.5× stop distance)
         if (!trade.partialClosed && rawPips >= stopDistance * 1.5) {
           trade.partialClosed = true;
-          // Move stop to break even if not already
           if (!trade.breakEvenMoved) {
             trade.stopLoss = isBuy ? trade.entryPrice + 2 : trade.entryPrice - 2;
             trade.breakEvenMoved = true;
@@ -505,7 +749,6 @@ class BotManager {
         }
 
         // Time stop (45 min)
-        const elapsed = Math.floor(Date.now() / 1000) - trade.openedAt;
         if (elapsed > 45 * 60) { shouldClose = true; closeReason = "time_stop"; }
       }
 
@@ -652,6 +895,7 @@ class BotManager {
         firstCandleWaiting: false, strategyCircuitBreakerActive: false, cooldownSecondsRemaining: null,
         scoreBreakdown: null, lastScoreResult: null, lastTradeTime: null, spikeWaitCandles: 0,
         hourlyTradeReset: 0,
+        swingConsolidation: null, swingBreakout: null, swingLastEval1hTime: 0,
       });
     }
     return this.bots.get(userId)!;
