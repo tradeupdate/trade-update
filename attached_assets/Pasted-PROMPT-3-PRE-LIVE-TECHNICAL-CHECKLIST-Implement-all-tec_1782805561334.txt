@@ -1,0 +1,721 @@
+PROMPT 3 — PRE-LIVE TECHNICAL CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Implement all technical infrastructure 
+required before the platform handles real 
+money. Work through every section completely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 1 — REPLIT KEEP-ALIVE SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Replit free tier sleeps after 30 minutes 
+of no HTTP requests. Prevent this with 
+two mechanisms working together.
+
+MECHANISM 1 — SERVER SELF-PING:
+Add to server startup:
+
+function startKeepAlive() {
+  const PING_INTERVAL = 4 * 60 * 1000 // 4 minutes
+  
+  setInterval(async () => {
+    try {
+      const response = await fetch(
+        `http://localhost:${PORT}/api/health`
+      )
+      const data = await response.json()
+      console.log(`Keep-alive ping: ${data.status} 
+        at ${new Date().toISOString()}`)
+    } catch (error) {
+      console.error('Keep-alive ping failed:', error)
+    }
+  }, PING_INTERVAL)
+  
+  console.log('Keep-alive system started 
+    — pinging every 4 minutes')
+}
+
+// Call after server starts:
+startKeepAlive()
+
+MECHANISM 2 — SSE CONNECTION KEEP-ALIVE:
+The SSE connection from logged-in users
+already prevents sleep. Enhance it:
+
+In the SSE endpoint, send a heartbeat
+every 30 seconds even when no data changes:
+
+setInterval(() => {
+  res.write(`data: {"type":"heartbeat",
+    "timestamp":${Date.now()}}\n\n`)
+}, 30000)
+
+HEALTH ENDPOINT (must exist):
+GET /api/health
+Returns:
+{
+  status: "ok",
+  timestamp: Date.now(),
+  uptime: process.uptime(),
+  botsRunning: activeBotCount,
+  derivConnected: derivConnectionStatus,
+  version: "1.0.0"
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 2 — DERIV CONTRACT SYNC SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Syncs bot database with actual Deriv 
+open contracts on every dashboard load
+and after every reconnection.
+
+async function syncDerivContracts(
+  userId: string,
+  derivService: DerivService
+): Promise<void> {
+
+  console.log(`Syncing contracts for ${userId}`)
+
+  // Step 1: Get open trades from database
+  const dbOpenTrades = db.prepare(`
+    SELECT * FROM trades 
+    WHERE user_id = ? AND status = 'open'
+    AND is_paper = 0
+  `).all(userId)
+
+  // Step 2: Get open contracts from Deriv
+  let derivContracts: any[] = []
+  try {
+    derivContracts = await derivService
+      .getOpenContracts()
+    // Deriv API call: { portfolio: 1 }
+  } catch (error) {
+    console.error('Failed to fetch Deriv 
+      portfolio:', error)
+    return
+  }
+
+  // Step 3: Compare and reconcile
+  for (const dbTrade of dbOpenTrades) {
+    const derivContract = derivContracts.find(
+      c => c.contract_id === dbTrade.contract_id
+    )
+
+    if (!derivContract) {
+      // Trade in DB but not in Deriv
+      // It must have closed during disconnect
+      console.warn(`Trade ${dbTrade.id} 
+        not found in Deriv — marking closed`)
+
+      db.prepare(`
+        UPDATE trades SET 
+        status = 'closed',
+        closed_at = ?,
+        pnl = ?,
+        exit_price = ?,
+        close_reason = 'closed_during_disconnect'
+        WHERE id = ?
+      `).run(
+        Date.now(),
+        0, // Unknown P&L
+        dbTrade.entry_price, // Use entry as estimate
+        dbTrade.id
+      )
+
+      // Send notification
+      sendNotification(userId, {
+        title: '⚠️ Trade closed during disconnect',
+        body: `${dbTrade.direction} trade was 
+          closed while bot was disconnected. 
+          Check Deriv for final P&L.`
+      })
+    }
+  }
+
+  // Step 4: Check for unknown Deriv contracts
+  for (const contract of derivContracts) {
+    const dbTrade = dbOpenTrades.find(
+      t => t.contract_id === contract.contract_id
+    )
+
+    if (!dbTrade) {
+      console.warn(`Unknown contract 
+        ${contract.contract_id} found in Deriv`)
+      
+      // Create a sync record
+      db.prepare(`
+        INSERT INTO trades (
+          id, user_id, direction, entry_price,
+          stake, status, is_paper, contract_id,
+          close_reason, opened_at
+        ) VALUES (?, ?, ?, ?, ?, 'open', 0, ?, 
+          'synced_from_deriv', ?)
+      `).run(
+        crypto.randomUUID(),
+        userId,
+        contract.contract_type === 'CALL' ? 
+          'BUY' : 'SELL',
+        contract.entry_spot,
+        contract.buy_price,
+        contract.contract_id,
+        Date.now()
+      )
+
+      sendNotification(userId, {
+        title: '📋 Unknown trade synced',
+        body: `Found open contract in Deriv 
+          not tracked by bot. Added to history.`
+      })
+    }
+  }
+
+  console.log(`Contract sync complete for 
+    ${userId}: ${dbOpenTrades.length} DB trades,
+    ${derivContracts.length} Deriv contracts`)
+}
+
+// Run on dashboard load:
+app.get('/api/user/dashboard', 
+  authenticateJWT, async (req, res) => {
+  // Sync contracts first if live mode
+  if (req.user.trading_mode !== 'paper') {
+    await syncDerivContracts(
+      req.user.id, 
+      derivServices.get(req.user.id)
+    )
+  }
+  // Then return dashboard data...
+})
+
+// Run on WebSocket reconnection:
+derivService.on('reconnected', () => {
+  syncDerivContracts(userId, derivService)
+})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 3 — DERIV API REJECTION HANDLER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Handle all Deriv API rejections gracefully.
+
+async function placeOrderWithRetry(
+  derivService: DerivService,
+  direction: 'BUY' | 'SELL',
+  stake: number,
+  userId: string,
+  botEngine: BotEngine
+): Promise<OrderResult> {
+
+  const MAX_RETRIES = 1
+  const RETRY_DELAY = 3000 // 3 seconds
+  const REJECTION_COOLDOWN = 5 * 60 * 1000 
+  // 5 minutes extra cooldown after rejection
+
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    try {
+      console.log(`Order attempt ${attempt}: 
+        ${direction} $${stake}`)
+
+      const result = await derivService.placeOrder(
+        direction, stake
+      )
+
+      if (result.success) {
+        console.log(`Order placed successfully: 
+          contract_id=${result.contractId}`)
+        return result
+      }
+
+      // Order failed
+      console.error(`Order rejected on attempt 
+        ${attempt}: ${result.error}`)
+
+      if (attempt <= MAX_RETRIES) {
+        console.log(`Retrying in 3 seconds...`)
+        await new Promise(r => setTimeout(r, RETRY_DELAY))
+        continue
+      }
+
+      // All attempts failed
+      console.error(`All ${MAX_RETRIES + 1} 
+        attempts failed. Pausing bot.`)
+
+      // PAUSE THE BOT
+      botEngine.pause(
+        `Deriv rejected order: ${result.error}`
+      )
+
+      // ADD EXTRA COOLDOWN
+      botEngine.setExtraCooldown(REJECTION_COOLDOWN)
+
+      // NOTIFY USER
+      sendNotification(userId, {
+        title: '⚠️ Trade rejected by Deriv',
+        body: `${direction} order rejected: 
+          ${result.error}. 
+          Bot paused — tap to resume.`,
+        action: 'open_dashboard'
+      })
+
+      // LOG THE REJECTION
+      db.prepare(`
+        INSERT INTO auth_log (
+          id, username, event, details, timestamp
+        ) VALUES (?, ?, 'trade_rejected', ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        userId,
+        JSON.stringify({ 
+          direction, stake, error: result.error,
+          attempts: MAX_RETRIES + 1
+        }),
+        Date.now()
+      )
+
+      return { 
+        success: false, 
+        error: result.error,
+        botPaused: true 
+      }
+
+    } catch (error) {
+      console.error(`Order attempt ${attempt} 
+        threw error:`, error)
+      
+      if (attempt <= MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY))
+        continue
+      }
+
+      botEngine.pause(`Network error placing order`)
+      sendNotification(userId, {
+        title: '⚠️ Order failed — network error',
+        body: 'Bot paused due to network error. 
+          Check connection and resume manually.'
+      })
+
+      return { success: false, error: String(error) }
+    }
+  }
+
+  return { success: false, error: 'Max retries exceeded' }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 4 — CAPITAL PRESERVATION MODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Activates when account balance drops 
+below $80 (stake would be below $0.80).
+
+function checkCapitalPreservationMode(
+  balance: number,
+  currentThreshold: number
+): CapitalPreservationResult {
+
+  const PRESERVATION_TRIGGER = 80
+  const PRESERVATION_EXIT = 100
+  const PRESERVATION_SCORE_THRESHOLD = 23
+  // Must score 23+ out of 25
+
+  if (balance <= PRESERVATION_TRIGGER) {
+    return {
+      active: true,
+      stake: 1.00, // Fixed $1 minimum
+      scoreThreshold: PRESERVATION_SCORE_THRESHOLD,
+      message: `Capital preservation mode — 
+        balance $${balance.toFixed(2)} 
+        below $${PRESERVATION_TRIGGER}. 
+        Fixed $1 stake, score ${PRESERVATION_SCORE_THRESHOLD}+ required.`
+    }
+  }
+
+  if (balance > PRESERVATION_EXIT) {
+    return {
+      active: false,
+      stake: balance * 0.01,
+      scoreThreshold: currentThreshold,
+      message: null
+    }
+  }
+
+  // Between $80 and $100 — still in recovery
+  // but use the actual calculated stake
+  return {
+    active: balance < PRESERVATION_TRIGGER,
+    stake: Math.max(1.00, balance * 0.01),
+    scoreThreshold: currentThreshold,
+    message: null
+  }
+}
+
+Display on dashboard when active:
+"🛡 Capital Preservation Mode
+Balance: $[X] | Stake: $1.00 fixed
+Score required: 23+/25
+Exits at: $100.00"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 5 — HARD STOP AT $50
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When balance hits $50 (50% drawdown from $100):
+
+function checkHardStop(
+  balance: number,
+  peakBalance: number,
+  botEngine: BotEngine,
+  userId: string
+): void {
+
+  const HARD_STOP_AMOUNT = 50
+  const HARD_STOP_DRAWDOWN = 0.50
+  const AUTO_RESTART_HOURS = 24
+
+  const drawdownFromPeak = 
+    (peakBalance - balance) / peakBalance
+  const belowHardStop = balance <= HARD_STOP_AMOUNT
+
+  if (belowHardStop || drawdownFromPeak >= 0.50) {
+    console.log(`HARD STOP TRIGGERED:
+      Balance: $${balance}
+      Peak: $${peakBalance}
+      Drawdown: ${(drawdownFromPeak*100).toFixed(1)}%`)
+
+    // Stop the bot completely
+    botEngine.hardStop()
+
+    // Schedule auto-restart after 24 hours
+    const restartTime = Date.now() + 
+      (AUTO_RESTART_HOURS * 60 * 60 * 1000)
+
+    db.prepare(`
+      UPDATE users SET 
+      auto_restart_at = ?,
+      bot_hard_stopped = 1
+      WHERE id = ?
+    `).run(restartTime, userId)
+
+    // Send urgent notification
+    sendNotification(userId, {
+      title: '🛑 HARD STOP — Bot stopped',
+      body: `Balance reached $${balance.toFixed(2)}.
+        Maximum drawdown hit. Bot stopped.
+        Auto-restart in 24 hours at $1 fixed stake.
+        Check your account immediately.`,
+      priority: 'high'
+    })
+
+    // Show full screen alert on dashboard
+    broadcastSSE(userId, {
+      type: 'hard_stop',
+      payload: {
+        balance,
+        peakBalance,
+        drawdown: drawdownFromPeak,
+        restartAt: restartTime,
+        message: `Bot stopped at $${balance}. 
+          Will auto-restart in 24 hours with 
+          micro-stake recovery mode.`
+      }
+    })
+  }
+}
+
+AUTO-RESTART after 24 hours:
+Check on server startup and every hour:
+
+function checkAutoRestart(): void {
+  const usersToRestart = db.prepare(`
+    SELECT * FROM users 
+    WHERE bot_hard_stopped = 1 
+    AND auto_restart_at <= ?
+    AND auto_restart_at IS NOT NULL
+  `).all(Date.now())
+
+  for (const user of usersToRestart) {
+    console.log(`Auto-restarting bot for 
+      ${user.username} after hard stop`)
+
+    // Reset hard stop flag
+    db.prepare(`
+      UPDATE users SET 
+      bot_hard_stopped = 0,
+      auto_restart_at = NULL
+      WHERE id = ?
+    `).run(user.id)
+
+    // Start bot in micro-stake recovery mode
+    const botEngine = getBotEngine(user.id)
+    botEngine.startMicroStakeRecovery({
+      fixedStake: 1.00,
+      maxTradesPerDay: 1,
+      scoreThreshold: 23,
+      allowedSessions: ['overlap'],
+      consecutiveLossStop: 1
+    })
+
+    sendNotification(user.id, {
+      title: '🔄 Bot auto-restarted',
+      body: `Recovery mode active. 
+        $1 stake, max 1 trade/day, 
+        overlap session only, 
+        score 23+ required.`
+    })
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 6 — COMPOUNDING SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Recalculate stake daily at midnight UTC.
+
+function runDailyCompound(userId: string): void {
+  const user = db.prepare(
+    'SELECT * FROM users WHERE id = ?'
+  ).get(userId)
+
+  const balance = user.account_balance
+  const phase = getGrowthPhase(balance)
+
+  let riskPercent: number
+  switch(phase) {
+    case 'SEED':      // $0-$200
+      riskPercent = 0.01; break
+    case 'BUILDING':  // $200-$500
+      riskPercent = 0.015; break
+    case 'GROWTH':    // $500-$1000
+      riskPercent = 0.02; break
+    case 'PROTECTION': // $1000+
+      riskPercent = 0.015; break
+    default:
+      riskPercent = 0.01
+  }
+
+  const newStake = Math.max(1.00, 
+    Math.min(50.00, balance * riskPercent)
+  )
+
+  const previousStake = user.current_stake || 1.00
+
+  db.prepare(`
+    UPDATE users SET 
+    current_stake = ?,
+    daily_start_balance = ?,
+    risk_percent = ?
+    WHERE id = ?
+  `).run(newStake, balance, riskPercent, userId)
+
+  if (newStake !== previousStake) {
+    sendNotification(userId, {
+      title: '💹 Stake updated',
+      body: `Daily compound: stake changed from 
+        $${previousStake.toFixed(2)} to 
+        $${newStake.toFixed(2)} 
+        (${(riskPercent*100).toFixed(1)}% of 
+        $${balance.toFixed(2)})`
+    })
+  }
+
+  console.log(`Daily compound for ${user.username}:
+    Balance: $${balance}
+    Phase: ${phase}
+    Risk: ${(riskPercent*100).toFixed(1)}%
+    New stake: $${newStake}`)
+}
+
+// Schedule at midnight UTC every day:
+function scheduleDailyCompound(): void {
+  function msUntilMidnightUTC(): number {
+    const now = new Date()
+    const midnight = new Date()
+    midnight.setUTCHours(24, 0, 0, 0)
+    return midnight.getTime() - now.getTime()
+  }
+
+  setTimeout(() => {
+    // Run compound for all active users
+    const activeUsers = db.prepare(`
+      SELECT id FROM users 
+      WHERE is_active = 1 
+      AND auto_compound_enabled = 1
+    `).all()
+
+    activeUsers.forEach(u => 
+      runDailyCompound(u.id)
+    )
+
+    // Schedule next midnight
+    scheduleDailyCompound()
+  }, msUntilMidnightUTC())
+
+  console.log(`Daily compound scheduled for 
+    midnight UTC in 
+    ${(msUntilMidnightUTC()/3600000).toFixed(1)} hours`)
+}
+
+scheduleDailyCompound()
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 7 — CONVICTION-BASED STAKE SCALING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+On highest-conviction setups size up within
+safe limits.
+
+function calculateConvictionStake(
+  baseStake: number,
+  score: number,
+  maxScore: number,
+  balance: number
+): number {
+
+  const scorePercent = score / maxScore
+
+  let multiplier: number
+  if (scorePercent >= 0.96) {
+    // 96%+ of max score = maximum conviction
+    multiplier = 1.5
+  } else if (scorePercent >= 0.88) {
+    multiplier = 1.25
+  } else if (scorePercent >= 0.80) {
+    multiplier = 1.0
+  } else if (scorePercent >= 0.72) {
+    multiplier = 0.75
+    // Below-threshold quality = smaller stake
+  } else {
+    multiplier = 1.0 // Default
+  }
+
+  const convictionStake = baseStake * multiplier
+
+  // Hard caps always enforced
+  const maxAllowed = Math.min(
+    50.00,           // Absolute maximum
+    balance * 0.02   // Maximum 2% of balance
+  )
+
+  const finalStake = Math.max(
+    1.00,
+    Math.min(convictionStake, maxAllowed)
+  )
+
+  if (multiplier !== 1.0) {
+    console.log(`Conviction sizing:
+      Score: ${score}/${maxScore} 
+        (${(scorePercent*100).toFixed(0)}%)
+      Base stake: $${baseStake}
+      Multiplier: ${multiplier}×
+      Final stake: $${finalStake}`)
+  }
+
+  return finalStake
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ITEM 8 — PRE-LIVE CHECKLIST UI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add a "Pre-Live Check" page in admin panel
+at /admin/prelive-check
+
+Shows a checklist that admin runs before
+switching any user from demo to live:
+
+CHECKLIST ITEMS (auto-check where possible):
+
+☐ Deriv API token valid and has Trade permission
+  [Auto-check via test API call]
+
+☐ Account balance synced with Deriv
+  [Auto-check: compare DB balance vs Deriv]
+
+☐ WebSocket connection stable for 5+ minutes
+  [Auto-check: measure uptime]
+
+☐ Keep-alive system running
+  [Auto-check: last ping < 5 minutes ago]
+
+☐ Contract sync working
+  [Auto-check: last sync < 10 minutes ago]
+
+☐ Strategy assigned and active
+  [Auto-check: strategy record exists]
+
+☐ Score threshold set correctly
+  [Auto-check: threshold > 0]
+
+☐ Daily loss cap configured
+  [Auto-check: cap > 0]
+
+☐ Consecutive loss stop configured
+  [Auto-check: stop > 0]
+
+☐ Demo backtest completed
+  [Manual check: admin confirms]
+
+☐ Demo live test completed (5+ days)
+  [Manual check: admin confirms]
+
+☐ At least 10 paper trades executed
+  [Auto-check: count paper trades]
+
+☐ Account balance above minimum
+  [Auto-check: balance >= $100]
+
+☐ Bot toggle working (tested on/off)
+  [Manual check: admin confirms]
+
+☐ Push notifications working
+  [Manual check: test notification sent]
+
+Each item shows GREEN check or RED X.
+All items must be GREEN before switching to live.
+"READY FOR LIVE TRADING" button appears only 
+when all checks pass.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+☐ Server self-pings every 4 minutes
+☐ SSE sends heartbeat every 30 seconds
+☐ /api/health returns correct data
+☐ Contract sync runs on dashboard load
+☐ Contract sync runs after reconnection
+☐ Unknown contracts create sync records
+☐ Disconnected trades marked closed
+☐ Order retry works once after 3 seconds
+☐ Second rejection pauses bot
+☐ Rejection notification sent to user
+☐ Capital preservation triggers at $80
+☐ Score threshold raises to 23 in preservation
+☐ Fixed $1 stake in preservation mode
+☐ Hard stop triggers at $50
+☐ Hard stop notification sent
+☐ Auto-restart schedules 24 hours later
+☐ Auto-restart starts micro-stake mode
+☐ Daily compound runs at midnight UTC
+☐ Compound notification sent when stake changes
+☐ Conviction sizing increases stake at 96%+
+☐ Conviction sizing never exceeds 2% of balance
+☐ Pre-live checklist page exists at /admin/prelive-check
+☐ All auto-checks run and display correctly
+☐ Manual checks require admin confirmation
+☐ Ready button only appears when all pass
+
+After implementing all three prompts:
+Run backtests on all three strategies
+for December 31 2025 to May 30 2026.
+Compare:
+- Win rate
+- Profit factor  
+- Expected daily value
+- Max drawdown
+- Trade frequency
+
+Report results and I will recommend 
+which strategy goes live first.

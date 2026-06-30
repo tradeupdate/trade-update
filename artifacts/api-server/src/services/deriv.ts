@@ -15,6 +15,22 @@ export interface Tick {
   timestamp: number;
 }
 
+export interface DerivContract {
+  contract_id: number;
+  contract_type: string;
+  entry_spot: number;
+  buy_price: number;
+  symbol: string;
+}
+
+export interface PlaceOrderResult {
+  success: boolean;
+  contractId?: number;
+  entrySpot?: number;
+  buyPrice?: number;
+  error?: string;
+}
+
 interface InProgressCandle {
   time: number;
   open: number;
@@ -26,6 +42,7 @@ interface InProgressCandle {
 
 type TickListener = (tick: Tick) => void;
 type CandleListener = (candle: Candle, tf: "1m" | "5m" | "15m") => void;
+type ReconnectListener = () => void;
 
 const SYMBOL = "R_75";
 const PRICE_MIN = 20000;
@@ -38,6 +55,7 @@ class DerivService {
   private ws: WebSocket | null = null;
   private connected = false;
   private reconnectAttempts = 0;
+  private hasConnectedOnce = false;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private candles1m: Candle[] = [];
   private candles5m: Candle[] = [];
@@ -47,7 +65,10 @@ class DerivService {
   private latestTick: Tick = { price: 39500, timestamp: Date.now() };
   private tickListeners: Set<TickListener> = new Set();
   private candleListeners: Set<CandleListener> = new Set();
+  private reconnectListeners: Set<ReconnectListener> = new Set();
   private proposalCallbacks: Map<string, (id: string, price: number) => void> = new Map();
+  private buyCallbacks: Map<string, (result: PlaceOrderResult) => void> = new Map();
+  private portfolioCallbacks: Array<(contracts: DerivContract[]) => void> = [];
 
   constructor() {
     this.connect();
@@ -59,9 +80,11 @@ class DerivService {
 
       this.ws.on("open", () => {
         this.connected = true;
+        const isReconnect = this.hasConnectedOnce;
         this.reconnectAttempts = 0;
+        this.hasConnectedOnce = true;
         logger.info("Deriv WebSocket connected");
-        this.subscribe();
+        this.subscribe(isReconnect);
         this.startPing();
       });
 
@@ -89,9 +112,8 @@ class DerivService {
     }
   }
 
-  private subscribe() {
+  private subscribe(isReconnect = false) {
     this.send({ ticks: SYMBOL, subscribe: 1 });
-    // 1m candles — live subscription + history
     this.send({
       ticks_history: SYMBOL,
       style: "candles",
@@ -101,7 +123,6 @@ class DerivService {
       subscribe: 1,
       req_id: 1,
     });
-    // 5m candles — history seed (no subscribe, built from 1m thereafter)
     this.send({
       ticks_history: SYMBOL,
       style: "candles",
@@ -110,7 +131,6 @@ class DerivService {
       end: "latest",
       req_id: 5,
     });
-    // 15m candles — history seed (scoring needs >= 25)
     this.send({
       ticks_history: SYMBOL,
       style: "candles",
@@ -119,7 +139,6 @@ class DerivService {
       end: "latest",
       req_id: 15,
     });
-    // 1h candles — history seed (scoring needs >= 55 for EMA50)
     this.send({
       ticks_history: SYMBOL,
       style: "candles",
@@ -128,6 +147,13 @@ class DerivService {
       end: "latest",
       req_id: 60,
     });
+
+    // Notify reconnect listeners on reconnect (not first connect)
+    if (isReconnect) {
+      this.reconnectListeners.forEach((fn) => {
+        try { fn(); } catch {}
+      });
+    }
   }
 
   private startPing() {
@@ -189,7 +215,6 @@ class DerivService {
           this.candles1h = mapped;
           logger.info(`Deriv: seeded ${mapped.length} 1h candles`);
         } else {
-          // Default: 1m candle history, rebuild higher TFs from scratch
           this.candles1m = mapped;
           this.buildHigherTimeframes();
         }
@@ -226,6 +251,40 @@ class DerivService {
         cb(id, askPrice);
       }
     }
+
+    if (msg.msg_type === "buy") {
+      const buy = msg.buy as Record<string, unknown>;
+      const contractId = Number(buy?.contract_id);
+      const entrySpot = Number(buy?.start_spot || buy?.entry_spot || 0);
+      const buyPrice = Number(buy?.buy_price || 0);
+      const cb = this.buyCallbacks.get("pending");
+      if (cb) {
+        this.buyCallbacks.delete("pending");
+        cb({ success: true, contractId, entrySpot, buyPrice });
+      }
+    }
+
+    if (msg.error && this.buyCallbacks.has("pending")) {
+      const err = msg.error as Record<string, unknown>;
+      const cb = this.buyCallbacks.get("pending");
+      if (cb) {
+        this.buyCallbacks.delete("pending");
+        cb({ success: false, error: String(err?.message || "Deriv API error") });
+      }
+    }
+
+    if (msg.msg_type === "portfolio") {
+      const portfolio = msg.portfolio as Record<string, unknown>;
+      const contracts = (portfolio?.contracts as Array<Record<string, unknown>> || []).map((c) => ({
+        contract_id: Number(c.contract_id),
+        contract_type: String(c.contract_type || ""),
+        entry_spot: Number(c.entry_spot || 0),
+        buy_price: Number(c.buy_price || 0),
+        symbol: String(c.symbol || ""),
+      }));
+      const callbacks = this.portfolioCallbacks.splice(0);
+      callbacks.forEach((fn) => { try { fn(contracts); } catch {} });
+    }
   }
 
   private updateCurrentCandle(price: number, ts: number) {
@@ -260,10 +319,8 @@ class DerivService {
     if (this.candles1m.length === 0) return existing;
     const built = this.groupCandles(this.candles1m, minutesPerCandle);
     if (built.length === 0) return existing;
-    // Keep seeded history that predates what we built from 1m data
     const oldestBuiltTime = built[0].time;
     const historicalSeed = existing.filter((c) => c.time < oldestBuiltTime);
-    // Merge: preserved historical + recent data built from 1m feed
     return [...historicalSeed, ...built].slice(-500);
   }
 
@@ -309,8 +366,76 @@ class DerivService {
     return () => this.candleListeners.delete(fn);
   }
 
+  onReconnect(fn: ReconnectListener): () => void {
+    this.reconnectListeners.add(fn);
+    return () => this.reconnectListeners.delete(fn);
+  }
+
   isConnected(): boolean {
     return this.connected;
+  }
+
+  async getOpenContracts(): Promise<DerivContract[]> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const idx = this.portfolioCallbacks.indexOf(resolve as any);
+        if (idx >= 0) this.portfolioCallbacks.splice(idx, 1);
+        reject(new Error("Portfolio request timed out"));
+      }, 8000);
+
+      this.portfolioCallbacks.push((contracts) => {
+        clearTimeout(timeout);
+        resolve(contracts);
+      });
+
+      this.send({ portfolio: 1 });
+    });
+  }
+
+  async placeOrder(
+    direction: "BUY" | "SELL",
+    stake: number,
+    token: string,
+  ): Promise<PlaceOrderResult> {
+    if (!this.connected) {
+      return { success: false, error: "Deriv not connected" };
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.buyCallbacks.delete("pending");
+        this.proposalCallbacks.delete("pending");
+        resolve({ success: false, error: "Order timed out" });
+      }, 15000);
+
+      // Step 1: get proposal
+      this.proposalCallbacks.set("pending", (proposalId, askPrice) => {
+        // Step 2: buy
+        this.send({
+          buy: proposalId,
+          price: askPrice,
+          passthrough: { token },
+        });
+
+        this.buyCallbacks.set("pending", (result) => {
+          clearTimeout(timeout);
+          resolve(result);
+        });
+      });
+
+      const contractType = direction === "BUY" ? "CALL" : "PUT";
+      this.send({
+        proposal: 1,
+        amount: stake,
+        basis: "stake",
+        contract_type: contractType,
+        currency: "USD",
+        duration: 5,
+        duration_unit: "t",
+        symbol: SYMBOL,
+        passthrough: { token },
+      });
+    });
   }
 }
 

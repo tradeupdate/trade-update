@@ -9,7 +9,8 @@ import {
   PlayCircle,
   LogOut,
   Menu,
-  Copy
+  Copy,
+  ShieldCheck
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useState } from "react";
@@ -33,6 +34,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
     { href: "/admin/backtest", label: "Backtest", icon: PlayCircle },
     { href: "/admin/settings", label: "Settings", icon: Settings },
     { href: "/admin/logs", label: "Logs", icon: ScrollText },
+    { href: "/admin/prelive-check", label: "Pre-Live Check", icon: ShieldCheck },
   ];
 
   const handleLogout = async () => {

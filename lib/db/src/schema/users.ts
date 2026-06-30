@@ -29,6 +29,10 @@ export const usersTable = pgTable("users", {
   demoMode: integer("demo_mode").default(0),
   stakeSize: real("stake_size"),
   maxDailyLoss: real("max_daily_loss"),
+  botHardStopped: integer("bot_hard_stopped").default(0),
+  autoRestartAt: integer("auto_restart_at"),
+  lastContractSync: integer("last_contract_sync"),
+  lastKeepAlivePing: integer("last_keep_alive_ping"),
 });
 
 export const insertUserSchema = createInsertSchema(usersTable).omit({ id: true });

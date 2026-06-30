@@ -42,6 +42,11 @@ router.get("/dashboard", async (req, res) => {
 
     const bot = botManager.getOrCreate(userId, user.tradingMode || "paper");
 
+    // Item 2: contract sync on every dashboard load for live users
+    if (user.tradingMode !== "paper") {
+      botManager.syncDerivContracts(userId).catch(() => {});
+    }
+
     res.json({
       user: {
         id: user.id, username: user.username, tradingProfile: user.tradingProfile,
@@ -443,10 +448,10 @@ router.get("/stream", async (req, res) => {
     } catch {}
   }, 15000);
 
-  // Keepalive
-  const keepalive = setInterval(() => {
-    try { res.write(": ping\n\n"); } catch {}
-  }, 20000);
+  // Item 1 — SSE heartbeat every 30 seconds
+  const heartbeat = setInterval(() => {
+    try { res.write(`data: ${JSON.stringify({ type: "heartbeat", timestamp: Date.now() })}\n\n`); } catch {}
+  }, 30000);
 
   // Send initial session + connection-established immediately
   setTimeout(() => {
@@ -474,7 +479,7 @@ router.get("/stream", async (req, res) => {
     clearInterval(stateInterval);
     clearInterval(sessionInterval);
     clearInterval(statsInterval);
-    clearInterval(keepalive);
+    clearInterval(heartbeat);
   });
 });
 

@@ -2,3 +2,4 @@
 - [Hook call conventions](hook-call-conventions.md) — query hooks with URL params require undefined as first arg when no params
 - [Backtest engine design](backtest-engine-design.md) — WARMUP=175, partial exits, regime detection, feature importance, session filter
 - [Swing strategy architecture](swing-strategy-arch.md) — swing routing in bot.ts, scoring/backtest engines, Candle volume field requirement
+- [Pre-live safety architecture](prelive-safety-arch.md) — keep-alive, hard stop, capital preservation, conviction sizing, daily compound design

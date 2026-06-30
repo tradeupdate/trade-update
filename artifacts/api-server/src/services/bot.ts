@@ -2,11 +2,13 @@ import { db } from "@workspace/db";
 import {
   usersTable, tradesTable, signalLogTable, strategiesTable,
   adaptiveWeightsTable, sessionPerformanceTable, systemSettingsTable,
-  botActivityLogTable, systemErrorLogTable, botInstancesTable
+  botActivityLogTable, systemErrorLogTable, botInstancesTable, authLogTable
 } from "@workspace/db";
-import { eq, and, gte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { derivService } from "./deriv.js";
+import type { DerivContract } from "./deriv.js";
+import { decrypt } from "../lib/crypto.js";
 import { score, type ScoreResult } from "./scoring.js";
 import {
   detectConsolidationRange, detectBreakout, scoreSwing, build4hCandles,
@@ -55,6 +57,10 @@ export interface BotState {
   swingLastEval1hTime: number;
   // Reversal-specific state
   reversalCooldownUntil: number | null;
+  // Risk management state
+  capitalPreservationMode: boolean;
+  hardStopped: boolean;
+  microStakeRecoveryMode: boolean;
 }
 
 interface OpenTrade {
@@ -664,7 +670,13 @@ class BotManager {
     stake = Math.min(1000, stake);
     if (state.winStreakCautionActive) stake = Math.round(stake * 0.8 * 100) / 100;
     if (state.recoveryModeActive) stake = Math.round(stake * 0.5 * 100) / 100;
-    stake = Math.max(0.5, stake);
+    // Item 4: capital preservation override
+    const revPres = this.checkCapitalPreservation(balance, strategy.scoreThreshold ?? 20);
+    state.capitalPreservationMode = revPres.active;
+    if (revPres.active) { stake = revPres.stake; }
+    // Item 7: conviction sizing
+    stake = this.calculateConvictionStake(stake, result.total, 25, balance);
+    stake = Math.max(0.5, Math.min(1000, Math.round(stake * 100) / 100));
 
     if (result.isPremium) {
       this.logActivity(userId, "Premium reversal — 1.25× stake", "info").catch(() => {});
@@ -745,6 +757,12 @@ class BotManager {
     }
     if (state.winStreakCautionActive) stake *= 0.8;
     if (state.recoveryModeActive) stake *= 0.5;
+    // Item 4: capital preservation override
+    const pres = this.checkCapitalPreservation(balance, strategy.scoreThreshold ?? 16);
+    state.capitalPreservationMode = pres.active;
+    if (pres.active) { stake = pres.stake; }
+    // Item 7: conviction-based sizing
+    stake = this.calculateConvictionStake(stake, result.total, 25, balance);
     stake = Math.max(0.5, Math.min(1000, Math.round(stake * 100) / 100));
     const isDemo = user.demoMode === 1;
 
@@ -1031,6 +1049,11 @@ class BotManager {
         accountBalance: newBalance,
         peakBalance: newPeak,
       }).where(eq(usersTable.id, userId));
+
+      // Items 4+5: check capital preservation + hard stop after balance update
+      const preservation = this.checkCapitalPreservation(newBalance, 16);
+      state.capitalPreservationMode = preservation.active;
+      await this.checkHardStop(userId, newBalance, newPeak, state);
     }
 
     this.broadcastToUser(userId, "trade", { action: "closed", result: isWin ? "win" : "loss", pnl, tradeId: trade.id, exitPrice });
@@ -1077,6 +1100,9 @@ class BotManager {
       rangeContext: state.rangeContext,
       cooldownSecondsRemaining: state.cooldownSecondsRemaining,
       strategyCircuitBreakerActive: state.strategyCircuitBreakerActive,
+      capitalPreservationMode: state.capitalPreservationMode,
+      hardStopped: state.hardStopped,
+      microStakeRecoveryMode: state.microStakeRecoveryMode,
     });
   }
 
@@ -1095,6 +1121,7 @@ class BotManager {
         hourlyTradeReset: 0,
         swingConsolidation: null, swingBreakout: null, swingLastEval1hTime: 0,
         reversalCooldownUntil: null,
+        capitalPreservationMode: false, hardStopped: false, microStakeRecoveryMode: false,
       });
     }
     return this.bots.get(userId)!;
@@ -1210,6 +1237,230 @@ class BotManager {
       if (state.isRunning) count++;
     }
     return count;
+  }
+
+  // ── Item 4: Capital Preservation ──────────────────────────────────────
+  private checkCapitalPreservation(balance: number, currentThreshold: number) {
+    const TRIGGER = 80;
+    const EXIT = 100;
+    const PRES_THRESHOLD = 23;
+    if (balance <= TRIGGER) {
+      return { active: true, stake: 1.00, scoreThreshold: PRES_THRESHOLD, message: `Capital preservation — balance $${balance.toFixed(2)} below $${TRIGGER}. Fixed $1 stake, score ${PRES_THRESHOLD}+ required.` };
+    }
+    if (balance > EXIT) {
+      return { active: false, stake: balance * 0.01, scoreThreshold: currentThreshold, message: null };
+    }
+    return { active: true, stake: Math.max(1.00, balance * 0.01), scoreThreshold: PRES_THRESHOLD, message: null };
+  }
+
+  // ── Item 5: Hard Stop ─────────────────────────────────────────────────
+  private async checkHardStop(userId: string, balance: number, peakBalance: number, state: BotState) {
+    const drawdownFromPeak = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
+    if (balance > 50 && drawdownFromPeak < 0.50) return;
+
+    logger.warn({ userId, balance, peakBalance, drawdownFromPeak }, "Hard stop triggered");
+    state.isRunning = false;
+    state.hardStopped = true;
+    state.pauseReason = `Hard stop — balance $${balance.toFixed(2)}`;
+
+    const restartTime = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+    try {
+      await db.update(usersTable).set({ botHardStopped: 1, autoRestartAt: restartTime }).where(eq(usersTable.id, userId));
+    } catch {}
+
+    this.broadcastToUser(userId, "hard_stop", {
+      balance, peakBalance, drawdown: drawdownFromPeak, restartAt: restartTime * 1000,
+      message: `Bot stopped at $${balance.toFixed(2)}. Auto-restart in 24 hours with micro-stake recovery.`,
+    });
+    this.broadcastToUser(userId, "alert", {
+      level: "error",
+      message: `🛑 HARD STOP — Balance $${balance.toFixed(2)}. Bot stopped. Auto-restart in 24 hours.`,
+    });
+    this.broadcastBotEvent(userId, state);
+    await this.logActivity(userId, `Hard stop triggered — balance $${balance.toFixed(2)}, drawdown ${(drawdownFromPeak * 100).toFixed(1)}%`, "error").catch(() => {});
+  }
+
+  async checkAutoRestart() {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const rows = await db.select().from(usersTable)
+        .where(and(eq(usersTable.botHardStopped, 1)));
+      const due = rows.filter(u => (u.autoRestartAt || 0) <= now && (u.autoRestartAt || 0) > 0);
+
+      for (const user of due) {
+        logger.info({ userId: user.id }, "Auto-restarting bot after hard stop");
+        await db.update(usersTable).set({ botHardStopped: 0, autoRestartAt: null }).where(eq(usersTable.id, user.id));
+        const state = this.bots.get(user.id);
+        if (state) {
+          this.startMicroStakeRecovery(user.id);
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, "checkAutoRestart error");
+    }
+  }
+
+  startMicroStakeRecovery(userId: string) {
+    const state = this.bots.get(userId);
+    if (!state) return;
+    state.microStakeRecoveryMode = true;
+    state.hardStopped = false;
+    state.isRunning = true;
+    state.pauseReason = null;
+    state.dailyLossHit = false;
+    this.broadcastBotEvent(userId, state);
+    this.broadcastToUser(userId, "alert", { level: "info", message: "🔄 Bot auto-restarted in micro-stake recovery mode. $1 stake, score 23+ required." });
+    this.logActivity(userId, "Micro-stake recovery mode started after hard stop", "info").catch(() => {});
+  }
+
+  // ── Item 6: Daily Compound ────────────────────────────────────────────
+  private async runDailyCompound(userId: string) {
+    try {
+      const users = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+      const user = users[0];
+      if (!user) return;
+      const balance = user.accountBalance || 0;
+      const previousStake = user.stakeSize || 1.00;
+      let riskPercent: number;
+      if (balance < 200) { riskPercent = 0.01; }
+      else if (balance < 500) { riskPercent = 0.015; }
+      else if (balance < 1000) { riskPercent = 0.02; }
+      else { riskPercent = 0.015; }
+      const newStake = Math.max(1.00, Math.min(50.00, balance * riskPercent));
+      await db.update(usersTable).set({ stakeSize: newStake, dailyStartBalance: balance }).where(eq(usersTable.id, userId));
+      if (Math.abs(newStake - previousStake) >= 0.01) {
+        this.broadcastToUser(userId, "alert", {
+          level: "info",
+          message: `💹 Daily compound: stake $${previousStake.toFixed(2)} → $${newStake.toFixed(2)} (${(riskPercent * 100).toFixed(1)}% of $${balance.toFixed(2)})`,
+        });
+        await this.logActivity(userId, `Daily compound: stake $${previousStake.toFixed(2)} → $${newStake.toFixed(2)}`, "info").catch(() => {});
+      }
+      logger.info({ userId, balance, newStake, riskPercent }, "Daily compound complete");
+    } catch (err) {
+      logger.error({ err, userId }, "Daily compound error");
+    }
+  }
+
+  scheduleDailyCompound() {
+    const msUntilMidnightUTC = () => {
+      const now = new Date();
+      const midnight = new Date();
+      midnight.setUTCHours(24, 0, 0, 0);
+      return midnight.getTime() - now.getTime();
+    };
+    const scheduleNext = () => {
+      setTimeout(async () => {
+        try {
+          const activeUsers = await db.select().from(usersTable)
+            .where(and(eq(usersTable.isActive, 1), eq(usersTable.autoCompoundEnabled, 1)));
+          for (const u of activeUsers) { await this.runDailyCompound(u.id); }
+        } catch (err) { logger.error({ err }, "Daily compound batch error"); }
+        scheduleNext();
+      }, msUntilMidnightUTC());
+    };
+    scheduleNext();
+    const hrs = (msUntilMidnightUTC() / 3600000).toFixed(1);
+    logger.info({ hoursUntilMidnight: hrs }, "Daily compound scheduled for midnight UTC");
+  }
+
+  // ── Item 7: Conviction Sizing ─────────────────────────────────────────
+  private calculateConvictionStake(baseStake: number, score: number, maxScore: number, balance: number): number {
+    const scorePercent = score / maxScore;
+    let multiplier: number;
+    if (scorePercent >= 0.96) { multiplier = 1.5; }
+    else if (scorePercent >= 0.88) { multiplier = 1.25; }
+    else if (scorePercent >= 0.80) { multiplier = 1.0; }
+    else if (scorePercent >= 0.72) { multiplier = 0.75; }
+    else { multiplier = 1.0; }
+    const maxAllowed = Math.min(50.00, balance * 0.02);
+    return Math.max(1.00, Math.min(baseStake * multiplier, maxAllowed));
+  }
+
+  // ── Item 3: Rejection Handler ─────────────────────────────────────────
+  private async placeOrderWithRetry(direction: "BUY" | "SELL", stake: number, userId: string, token: string, state: BotState) {
+    const MAX_RETRIES = 1;
+    const RETRY_DELAY = 3000;
+    const REJECTION_COOLDOWN = 5 * 60;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+      try {
+        logger.info({ userId, attempt, direction, stake }, "Placing Deriv order");
+        const result = await derivService.placeOrder(direction, stake, token);
+        if (result.success) return result;
+        logger.warn({ userId, attempt, error: result.error }, "Deriv order rejected");
+        if (attempt <= MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, RETRY_DELAY));
+          continue;
+        }
+        state.isRunning = false;
+        state.pauseReason = `Deriv rejected: ${result.error}`;
+        this.broadcastBotEvent(userId, state);
+        this.broadcastToUser(userId, "alert", { level: "error", message: `⚠️ Trade rejected by Deriv: ${result.error}. Bot paused — resume manually.` });
+        await this.logActivity(userId, `Deriv order rejected: ${result.error} — bot paused`, "error").catch(() => {});
+        try {
+          await db.insert(authLogTable).values({
+            id: randomUUID(), username: userId, event: "trade_rejected",
+            details: JSON.stringify({ direction, stake, error: result.error, attempts: attempt }),
+            timestamp: Math.floor(Date.now() / 1000),
+          });
+        } catch {}
+        return { success: false, error: result.error };
+      } catch (err) {
+        if (attempt <= MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, RETRY_DELAY));
+          continue;
+        }
+        state.isRunning = false;
+        state.pauseReason = "Network error placing order";
+        this.broadcastBotEvent(userId, state);
+        return { success: false, error: String(err) };
+      }
+    }
+    return { success: false, error: "Max retries exceeded" };
+  }
+
+  // ── Item 2: Contract Sync ─────────────────────────────────────────────
+  async syncDerivContracts(userId: string) {
+    try {
+      const users = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+      const user = users[0];
+      if (!user || user.tradingMode === "paper") return;
+
+      const dbOpenTrades = await db.select().from(tradesTable)
+        .where(and(eq(tradesTable.userId, userId), eq(tradesTable.status, "open"), eq(tradesTable.isPaper, 0)));
+
+      if (dbOpenTrades.length === 0) return;
+
+      let derivContracts: DerivContract[] = [];
+      try {
+        derivContracts = await derivService.getOpenContracts();
+      } catch (err) {
+        logger.error({ err, userId }, "Failed to fetch Deriv portfolio");
+        return;
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      if (derivContracts.length === 0 && dbOpenTrades.length > 0) {
+        for (const dbTrade of dbOpenTrades) {
+          logger.warn({ userId, tradeId: dbTrade.id }, "Trade closed during disconnect");
+          await db.update(tradesTable).set({
+            status: "closed", closedAt: now, pnl: 0,
+            exitPrice: dbTrade.entryPrice,
+          }).where(eq(tradesTable.id, dbTrade.id));
+          this.broadcastToUser(userId, "alert", {
+            level: "warning",
+            message: "⚠️ Trade closed while bot was disconnected. Check Deriv for final P&L.",
+          });
+          const state = this.bots.get(userId);
+          if (state) { state.openTrade = null; }
+        }
+      }
+
+      await db.update(usersTable).set({ lastContractSync: now }).where(eq(usersTable.id, userId));
+      logger.info({ userId, dbTrades: dbOpenTrades.length, derivContracts: derivContracts.length }, "Contract sync complete");
+    } catch (err) {
+      logger.error({ err, userId }, "Contract sync error");
+    }
   }
 }
 

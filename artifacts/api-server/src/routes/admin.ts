@@ -19,6 +19,7 @@ import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
 import { encrypt } from "../lib/crypto.js";
+import { getLastKeepAlivePing } from "./health.js";
 
 const router = Router();
 router.use(requireAdmin);
@@ -786,6 +787,102 @@ router.patch("/users/:userId/token", async (req, res) => {
     res.json({ message: "Token set" });
   } catch (err) {
     logger.error({ err }, "Set token error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── Item 8: Pre-Live Checklist ──────────────────────────────────────────
+router.get("/prelive-check/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const userRows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const user = userRows[0];
+    if (!user) { res.status(404).json({ error: "User not found" }); return; }
+
+    let strategy: any = null;
+    if (user.strategyId) {
+      const stratRows = await db.select().from(strategiesTable).where(eq(strategiesTable.id, user.strategyId)).limit(1);
+      strategy = stratRows[0] || null;
+    }
+
+    const paperTrades = await db.select().from(tradesTable)
+      .where(and(eq(tradesTable.userId, userId), eq(tradesTable.isPaper, 1), eq(tradesTable.status, "closed")));
+
+    const now = Date.now();
+    const lastPing = getLastKeepAlivePing();
+    const lastSync = user.lastContractSync ? user.lastContractSync * 1000 : 0;
+
+    const checks = [
+      {
+        id: "deriv_token", auto: true,
+        label: "Deriv API token configured",
+        pass: !!user.derivTokenEncrypted,
+        detail: user.derivTokenEncrypted ? "Token is set" : "No token configured",
+      },
+      {
+        id: "deriv_connected", auto: true,
+        label: "WebSocket connection stable",
+        pass: derivService.isConnected(),
+        detail: derivService.isConnected() ? "Connected to Deriv" : "Not connected",
+      },
+      {
+        id: "keep_alive", auto: true,
+        label: "Keep-alive system running",
+        pass: lastPing > 0 && now - lastPing < 5 * 60 * 1000,
+        detail: lastPing > 0 ? `Last ping ${Math.round((now - lastPing) / 1000)}s ago` : "No ping recorded yet",
+      },
+      {
+        id: "contract_sync", auto: true,
+        label: "Contract sync working",
+        pass: lastSync > 0 || user.tradingMode === "paper",
+        detail: user.tradingMode === "paper" ? "Paper mode — sync not required" : lastSync > 0 ? `Last sync ${Math.round((now - lastSync) / 1000)}s ago` : "Never synced",
+      },
+      {
+        id: "strategy_assigned", auto: true,
+        label: "Strategy assigned and active",
+        pass: !!strategy,
+        detail: strategy ? `Strategy: ${strategy.name}` : "No strategy assigned",
+      },
+      {
+        id: "score_threshold", auto: true,
+        label: "Score threshold set correctly",
+        pass: strategy ? (strategy.scoreThreshold || 0) > 0 : false,
+        detail: strategy ? `Threshold: ${strategy.scoreThreshold ?? 0}` : "No strategy",
+      },
+      {
+        id: "daily_loss_cap", auto: true,
+        label: "Daily loss cap configured",
+        pass: (user.maxDailyLoss || 0) > 0,
+        detail: user.maxDailyLoss ? `Cap: $${user.maxDailyLoss}` : "Not configured",
+      },
+      {
+        id: "consecutive_loss_stop", auto: true,
+        label: "Consecutive loss stop configured",
+        pass: strategy ? (strategy.consecutiveLossStop || 0) > 0 : false,
+        detail: strategy ? `Stop: ${strategy.consecutiveLossStop ?? 0} losses` : "No strategy",
+      },
+      {
+        id: "paper_trades", auto: true,
+        label: "At least 10 paper trades executed",
+        pass: paperTrades.length >= 10,
+        detail: `${paperTrades.length} paper trades closed`,
+      },
+      {
+        id: "balance_minimum", auto: true,
+        label: "Account balance above $100 minimum",
+        pass: (user.accountBalance || 0) >= 100,
+        detail: `Balance: $${(user.accountBalance || 0).toFixed(2)}`,
+      },
+      { id: "backtest_completed", auto: false, label: "Demo backtest completed", pass: null, detail: "Manual confirmation required" },
+      { id: "demo_live_test", auto: false, label: "Demo live test completed (5+ days)", pass: null, detail: "Manual confirmation required" },
+      { id: "bot_toggle_tested", auto: false, label: "Bot toggle working (tested on/off)", pass: null, detail: "Manual confirmation required" },
+      { id: "push_notifications", auto: false, label: "Push notifications working", pass: null, detail: "Manual confirmation required" },
+    ];
+
+    const autoPass = checks.filter(c => c.auto).every(c => c.pass === true);
+    res.json({ userId, username: user.username, tradingMode: user.tradingMode, checks, autoPass });
+  } catch (err) {
+    logger.error({ err }, "Prelive check error");
     res.status(500).json({ error: "Server error" });
   }
 });

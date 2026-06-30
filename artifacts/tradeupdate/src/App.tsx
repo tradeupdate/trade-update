@@ -25,6 +25,7 @@ import AdminCopy from "@/pages/admin/copy";
 import AdminBacktest from "@/pages/admin/backtest";
 import AdminSettings from "@/pages/admin/settings";
 import AdminLogs from "@/pages/admin/logs";
+import AdminPreLiveCheck from "@/pages/admin/prelive-check";
 
 const queryClient = new QueryClient();
 
@@ -74,6 +75,9 @@ function Router() {
       </Route>
       <Route path="/admin/logs">
         <AdminGuard><AdminLogs /></AdminGuard>
+      </Route>
+      <Route path="/admin/prelive-check">
+        <AdminGuard><AdminPreLiveCheck /></AdminGuard>
       </Route>
 
       <Route component={NotFound} />
