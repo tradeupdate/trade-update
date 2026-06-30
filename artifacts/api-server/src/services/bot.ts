@@ -12,6 +12,7 @@ import {
   detectConsolidationRange, detectBreakout, scoreSwing, build4hCandles,
   type ConsolidationRange, type BreakoutResult,
 } from "./swing-scoring.js";
+import { scoreReversal, type ReversalScoreResult } from "./reversal-scoring.js";
 import { getCurrentSession, getNextSession, isInSession, SESSIONS } from "./sessions.js";
 import { logger } from "../lib/logger.js";
 
@@ -52,6 +53,8 @@ export interface BotState {
   swingConsolidation: ConsolidationRange | null;
   swingBreakout: BreakoutResult | null;
   swingLastEval1hTime: number;
+  // Reversal-specific state
+  reversalCooldownUntil: number | null;
 }
 
 interface OpenTrade {
@@ -76,6 +79,10 @@ interface OpenTrade {
   rangeLow?: number;
   stage2Added?: boolean;
   stage1Stake?: number;
+  // Reversal-specific (optional)
+  reversalTrade?: boolean;
+  reversalTargetPrice?: number;
+  reversalIsPremium?: boolean;
 }
 
 interface ScoreBreakdown {
@@ -309,7 +316,13 @@ class BotManager {
       return;
     }
 
-    // Run scoring engine (sniper / reversal)
+    // ── REVERSAL strategy routing ─────────────────────────────────────────
+    if (strategy.type === "reversal") {
+      await this.evaluateReversalSignal(userId, user, strategy, state, now, currentSession);
+      return;
+    }
+
+    // Run scoring engine (sniper)
     const candles5m  = derivService.getCandles("5m", 100);
     const candles15m = derivService.getCandles("15m", 60);
     const candles1h  = derivService.getCandles("1h", 120);
@@ -546,6 +559,163 @@ class BotManager {
     logger.info({ userId, tradeId, dir: swingResult.direction, score: swingResult.total }, "Swing Stage 1 opened");
   }
 
+  // ── Reversal signal evaluation ────────────────────────────────────────────
+  private async evaluateReversalSignal(
+    userId: string,
+    user: any,
+    strategy: any,
+    state: BotState,
+    now: number,
+    currentSession: ReturnType<typeof getCurrentSession>
+  ) {
+    const candles1m  = derivService.getCandles("1m", 30);
+    const candles5m  = derivService.getCandles("5m", 100);
+    const candles15m = derivService.getCandles("15m", 60);
+
+    if (candles5m.length < 30 || candles15m.length < 14) {
+      state.pauseReason = null;
+      this.broadcastToUser(userId, "scores", {
+        loading: true,
+        message: "Gathering reversal candle data...",
+        candlesLoaded: candles5m.length,
+        candlesNeeded: 30,
+      });
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // CHECK — Reversal cooldown (30 min after last reversal trade)
+    if (state.reversalCooldownUntil && now < state.reversalCooldownUntil) {
+      const remaining = state.reversalCooldownUntil - now;
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      state.pauseReason = `Reversal cooldown — ${mins}m ${secs}s remaining`;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+    if (state.reversalCooldownUntil && now >= state.reversalCooldownUntil) {
+      state.reversalCooldownUntil = null;
+    }
+
+    const threshold = strategy.scoreThreshold ?? 20;
+    const result = scoreReversal(candles1m, candles5m, candles15m, threshold);
+
+    if (!result) {
+      state.currentScore = null;
+      state.pauseReason = "Gathering reversal data...";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    state.currentScore = result.total;
+    state.scoreBreakdown = {
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
+      total: result.total,
+      direction: result.direction,
+    };
+
+    // Broadcast scores
+    this.broadcastToUser(userId, "scores", {
+      total: result.total,
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
+      signal: result.direction,
+      direction: result.direction,
+      loading: false,
+      rsi5m: result.divergence5m.currentRsi,
+      rejectionReason: result.rejectionReason,
+      sessionMovePips: result.sessionMove.currentMove.toFixed(0),
+      bbMiddle: result.bbExtreme.middle?.toFixed(2),
+    });
+
+    // Log signal
+    const signalId = randomUUID();
+    const action = result.direction !== "NONE" ? "executed" : "rejected";
+
+    await db.insert(signalLogTable).values({
+      id: signalId, userId, strategyId: strategy.id, timestamp: now,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
+      direction: result.direction, action, rejectionReason: result.rejectionReason,
+      ema9: null, ema21: null, rsi: result.divergence5m.currentRsi,
+      rangeContext: `session_move:${result.sessionMove.currentMove.toFixed(0)}pips`,
+      sessionName: currentSession?.name || null,
+      consolidationDetected: 0,
+      spikeDetected: 0,
+    });
+
+    if (result.direction === "NONE") {
+      state.pauseReason = result.rejectionReason;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // Execute reversal trade
+    state.pauseReason = null;
+    const isBuy = result.direction === "BUY";
+    const balance = user.accountBalance || 5000;
+    const riskPct = (strategy.maxRiskPercent ?? 1.0) / 100;
+    let stake = result.isPremium
+      ? Math.max(0.5, Math.round(balance * riskPct * 1.25 * 100) / 100)
+      : Math.max(0.5, Math.round(balance * riskPct * 100) / 100);
+    stake = Math.min(1000, stake);
+    if (state.winStreakCautionActive) stake = Math.round(stake * 0.8 * 100) / 100;
+    if (state.recoveryModeActive) stake = Math.round(stake * 0.5 * 100) / 100;
+    stake = Math.max(0.5, stake);
+
+    if (result.isPremium) {
+      this.logActivity(userId, "Premium reversal — 1.25× stake", "info").catch(() => {});
+    }
+
+    const tradeId = randomUUID();
+    await db.insert(tradesTable).values({
+      id: tradeId, userId, strategyId: strategy.id,
+      direction: result.direction, entryPrice: result.entryPrice, stake,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
+      isCopyTrade: 0, isPaper: user.tradingMode === "paper" ? 1 : 0, isDemo: 0,
+      symbol: "R_75", tradingMode: user.tradingMode || "paper", status: "open",
+      stopLoss: result.stopLoss, takeProfit1: result.takeProfit, takeProfit2: result.takeProfit,
+      recoveryModeActive: state.recoveryModeActive ? 1 : 0,
+      winStreakCautionActive: state.winStreakCautionActive ? 1 : 0,
+      sessionName: currentSession?.name || null,
+      rangeContext: `session_move:${result.sessionMove.currentMove.toFixed(0)}pips|rr:${result.rr.toFixed(2)}`,
+      openedAt: now,
+      rsiAtEntry: result.divergence5m.currentRsi, stochAtEntry: null, macdAtEntry: null,
+    });
+
+    state.openTrade = {
+      id: tradeId,
+      direction: result.direction,
+      entryPrice: result.entryPrice,
+      currentPrice: result.entryPrice,
+      stake,
+      pnl: 0,
+      stopLoss: result.stopLoss,
+      takeProfit1: result.takeProfit,
+      takeProfit2: result.takeProfit,
+      breakEvenMoved: false,
+      partialClosed: false,
+      momentumExtensionActive: false,
+      openedAt: now,
+      reversalTrade: true,
+      reversalTargetPrice: result.takeProfit,
+      reversalIsPremium: result.isPremium,
+    };
+    state.lastTradeTime = now;
+    state.lastSignalScore = result.total;
+    state.lastSignalDirection = result.direction;
+
+    this.broadcastToUser(userId, "trade", { action: "opened", trade: state.openTrade });
+    this.broadcastBotEvent(userId, state);
+    const premiumTag = result.isPremium ? " [PREMIUM 1.25×]" : "";
+    this.logActivity(userId, `Reversal ${result.direction} @ ${result.entryPrice.toFixed(2)} — SL ${result.stopLoss.toFixed(2)} — TP ${result.takeProfit.toFixed(2)} — R:R ${result.rr.toFixed(2)} — Score ${result.total}${premiumTag}`, "info").catch(() => {});
+    logger.info({ userId, tradeId, dir: result.direction, score: result.total, rr: result.rr, premium: result.isPremium }, "Reversal trade opened");
+  }
+
   private calcATR(candles: Array<{ high: number; low: number; close: number }>, period = 14): number[] {
     const tr = candles.map((c, i) => {
       if (i === 0) return c.high - c.low;
@@ -718,7 +888,35 @@ class BotManager {
         continue;
       }
 
-      // ── Standard (sniper / reversal) trade monitoring ─────────────────
+      // ── Reversal trade monitoring ──────────────────────────────────────
+      if (trade.reversalTrade) {
+        // SL
+        if (isBuy && currentPrice <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+        if (!isBuy && currentPrice >= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+
+        if (!shouldClose) {
+          // TP — single target: middle Bollinger Band
+          const tp = trade.reversalTargetPrice ?? trade.takeProfit1;
+          if (isBuy && currentPrice >= tp) { shouldClose = true; closeReason = "tp2"; }
+          if (!isBuy && currentPrice <= tp) { shouldClose = true; closeReason = "tp2"; }
+
+          // 20-minute time stop
+          if (elapsed > 20 * 60) { shouldClose = true; closeReason = "time_stop"; }
+        }
+
+        if (shouldClose) {
+          await this.closeTrade(userId, state, trade, currentPrice, closeReason);
+          // Set 30-minute cooldown after any reversal trade closes
+          const state2 = this.bots.get(userId);
+          if (state2) {
+            state2.reversalCooldownUntil = Math.floor(Date.now() / 1000) + 30 * 60;
+            this.logActivity(userId, "Reversal cooldown: 30 minutes until next entry", "info").catch(() => {});
+          }
+        }
+        continue;
+      }
+
+      // ── Standard (sniper) trade monitoring ────────────────────────────
 
       // Stop loss
       if (isBuy && currentPrice <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
@@ -896,6 +1094,7 @@ class BotManager {
         scoreBreakdown: null, lastScoreResult: null, lastTradeTime: null, spikeWaitCandles: 0,
         hourlyTradeReset: 0,
         swingConsolidation: null, swingBreakout: null, swingLastEval1hTime: 0,
+        reversalCooldownUntil: null,
       });
     }
     return this.bots.get(userId)!;

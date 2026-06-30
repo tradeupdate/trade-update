@@ -14,6 +14,7 @@ import { sendApprovedEmail, sendRejectedEmail } from "../services/email.js";
 import { derivService } from "../services/deriv.js";
 import { runDeterministicBacktest, deleteCacheFile, getCacheStatus } from "../services/backtest-engine.js";
 import { runSwingBacktest } from "../services/swing-backtest-engine.js";
+import { runReversalBacktest } from "../services/reversal-backtest-engine.js";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
@@ -422,7 +423,7 @@ router.post("/backtest/run", async (req, res) => {
       sessionEndHour: sessionEndHour ?? 20,
     };
 
-    let result: Awaited<ReturnType<typeof runDeterministicBacktest>> | Awaited<ReturnType<typeof runSwingBacktest>>;
+    let result: Awaited<ReturnType<typeof runDeterministicBacktest>> | Awaited<ReturnType<typeof runSwingBacktest>> | Awaited<ReturnType<typeof runReversalBacktest>>;
 
     if (strategy.type === "swing") {
       const swingConfig = {
@@ -435,6 +436,14 @@ router.post("/backtest/run", async (req, res) => {
         consecutiveLossStop: strategy.consecutiveLossStop ?? 2,
       };
       result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000);
+    } else if (strategy.type === "reversal") {
+      const reversalConfig = {
+        scoreThreshold: strategy.scoreThreshold ?? 20,
+        maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+        maxTradesDay: strategy.maxTradesDay ?? 5,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+      };
+      result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, 5000);
     } else {
       result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, 5000);
     }

@@ -53,15 +53,15 @@ async function seed() {
     },
     {
       id: randomUUID(), name: "V75 Reversal", type: "reversal",
-      description: "Counter-trend entries at extreme RSI/BB with SMC confluence. High score threshold.",
+      description: "Counter-trend strategy trading RSI extremes after significant session moves. Requires dual-timeframe divergence confirmation and 1m candle entry confirmation. Fast trades targeting middle BB. Maximum 5 per day.",
       status: "active", entryTimeframe: "1m", signalTimeframe: "5m", trendTimeframe: "15m",
-      sessionsEnabled: JSON.stringify(["London/NY Overlap"]),
-      scoreThreshold: 16, maxTradesDay: 6, maxRiskPercent: 1.0, maxTradesHour: 2,
-      stopMultiplier: 1.2, tp1Multiplier: 2.0, tp2Multiplier: 4.0,
+      sessionsEnabled: JSON.stringify(["asian", "london", "overlap", "ny"]),
+      scoreThreshold: 20, maxTradesDay: 5, maxRiskPercent: 1.0, maxTradesHour: 2,
+      stopMultiplier: 1.0, tp1Multiplier: 0, tp2Multiplier: 0,
       counterTrendEnabled: 1, counterTrendRsiThreshold: 78, counterTrendBbSigma: 2.5,
-      momentumExtensionEnabled: 1, spikeFilterEnabled: 1, spikeFilterMultiplier: 3.5,
-      consolidationDetection: 1, firstCandleRule: 1, consecutiveLossStop: 3,
-      createdAt: now, updatedAt: now, createdBy: "system", winRate: 65.3, avgScore: 45.6,
+      momentumExtensionEnabled: 0, spikeFilterEnabled: 1, spikeFilterMultiplier: 2.0,
+      consolidationDetection: 1, firstCandleRule: 0, consecutiveLossStop: 3,
+      createdAt: now, updatedAt: now, createdBy: "system", winRate: 0, avgScore: 0,
     },
   ];
 
@@ -70,8 +70,9 @@ async function seed() {
   }
   console.log("✅ Strategies seeded");
 
-  const sniperStrategyId = strategies[0]!.id;
-  const swingStrategyId  = strategies[1]!.id;
+  const sniperStrategyId   = strategies[0]!.id;
+  const swingStrategyId    = strategies[1]!.id;
+  const reversalStrategyId = strategies[2]!.id;
 
   // Admin user
   const adminExists = await db.select().from(usersTable).where(eq(usersTable.username, "admin")).limit(1);
@@ -119,6 +120,22 @@ async function seed() {
     console.log("✅ Swing test user: swingtest100 / Swing100!");
   } else {
     console.log("ℹ️  Swing test user already exists");
+  }
+
+  // Reversal test user
+  const reversalTestExists = await db.select().from(usersTable).where(eq(usersTable.username, "reversaltest100")).limit(1);
+  if (!reversalTestExists.length) {
+    const reversalHash = await bcrypt.hash("Reversal100!", 12);
+    await db.insert(usersTable).values({
+      id: randomUUID(), username: "reversaltest100", email: "reversaltest@tradeupdate.app",
+      passwordHash: reversalHash, role: "user", status: "active", isActive: 1,
+      tradingProfile: "safe", tradingMode: "paper",
+      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      forcePasswordChange: 0, createdAt: now, strategyId: reversalStrategyId,
+    });
+    console.log("✅ Reversal test user: reversaltest100 / Reversal100!");
+  } else {
+    console.log("ℹ️  Reversal test user already exists");
   }
 
   console.log("\n🎉 Seed complete!");

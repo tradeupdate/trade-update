@@ -14,7 +14,9 @@ Institutional-grade algorithmic trading platform for the Deriv Volatility 75 (V7
 ## Seeded Logins
 
 - **Admin**: `admin` / `Admin1234!`
-- **User**: `Clean10test` / `Test1234!`
+- **User (Sniper)**: `Clean10test` / `Test1234!`
+- **User (Swing)**: `swingtest100` / `Swing100!`
+- **User (Reversal)**: `reversaltest100` / `Reversal100!`
 
 ## Stack
 

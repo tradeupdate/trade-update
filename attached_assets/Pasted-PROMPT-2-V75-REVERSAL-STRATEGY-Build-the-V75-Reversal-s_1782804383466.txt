@@ -1,0 +1,478 @@
+PROMPT 2 — V75 REVERSAL STRATEGY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build the V75 Reversal strategy completely 
+from scratch. This strategy trades counter-trend
+at RSI extremes when price has moved significantly
+from session open and shows divergence on 
+multiple timeframes. It is completely separate 
+from V75 Sniper and V75 Swing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — STRATEGY DATABASE RECORD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INSERT into strategies table:
+name: "V75 Reversal"
+description: "Counter-trend strategy trading
+RSI extremes after significant session moves.
+Requires dual-timeframe divergence confirmation
+and 1m candle entry confirmation. Fast trades
+targeting middle BB. Maximum 5 per day."
+type: "reversal"
+status: "active"
+entry_timeframe: "1m"
+signal_timeframe: "5m"
+trend_timeframe: "15m"
+sessions_enabled: ["asian","london","overlap","ny"]
+score_threshold: 20
+max_trades_day: 5
+max_trades_hour: 2
+consecutive_loss_stop: 3
+max_risk_percent: 1.0
+stop_multiplier: 1.0
+tp1_multiplier: 0
+tp2_multiplier: 0
+counter_trend_enabled: 1
+first_candle_rule: 0
+spike_filter_enabled: 1
+spike_filter_multiplier: 2.0
+momentum_extension_enabled: 0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — SESSION MOVE CALCULATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CRITICAL: Reversal only triggers after 
+V75 has moved at least 350 pips from 
+the current session open price.
+
+function calculateSessionMove(
+  candles5m: Candle[],
+  currentTime: number
+): SessionMoveResult {
+
+  // Get session open time
+  const utcHour = new Date(
+    currentTime * 1000
+  ).getUTCHours()
+  
+  let sessionOpenHour: number
+  if (utcHour >= 0 && utcHour < 7) 
+    sessionOpenHour = 0   // Asian
+  else if (utcHour >= 7 && utcHour < 12) 
+    sessionOpenHour = 7   // London
+  else if (utcHour >= 12 && utcHour < 17) 
+    sessionOpenHour = 12  // Overlap/NY
+  else 
+    sessionOpenHour = 0   // Default to Asian
+
+  // Find session open candle
+  const sessionOpenTime = new Date(
+    currentTime * 1000
+  )
+  sessionOpenTime.setUTCHours(sessionOpenHour, 0, 0, 0)
+  const sessionOpenUnix = sessionOpenTime.getTime() / 1000
+
+  // Find the first candle of this session
+  const sessionCandles = candles5m.filter(
+    c => c.time >= sessionOpenUnix && 
+         c.time <= currentTime
+  )
+
+  if (sessionCandles.length === 0) {
+    return { 
+      sessionOpenPrice: 0, 
+      currentMove: 0, 
+      moveDirection: 'NONE',
+      sufficientMove: false 
+    }
+  }
+
+  const sessionOpenPrice = sessionCandles[0].open
+  const currentPrice = 
+    sessionCandles[sessionCandles.length-1].close
+  const rawMove = currentPrice - sessionOpenPrice
+  const moveInPips = Math.abs(rawMove)
+  const moveDirection = rawMove > 0 ? 'UP' : 'DOWN'
+
+  console.log(`Session move from open:
+    Session open: ${sessionOpenPrice}
+    Current: ${currentPrice}
+    Move: ${moveInPips.toFixed(2)} pips 
+    Direction: ${moveDirection}
+    Sufficient (350+): ${moveInPips >= 350}`)
+
+  return {
+    sessionOpenPrice,
+    currentMove: moveInPips,
+    moveDirection,
+    sufficientMove: moveInPips >= 350
+  }
+}
+
+If sessionMove.sufficientMove === false:
+Return { signal: 'NONE', 
+  reason: `Insufficient session move: 
+  ${sessionMove.currentMove.toFixed(0)} pips 
+  (need 350)` }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — DUAL TIMEFRAME DIVERGENCE DETECTOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Both 5m AND 15m must show divergence.
+
+function detectDivergence(
+  candles: Candle[],
+  lookback: number = 10
+): DivergenceResult {
+
+  const recent = candles.slice(-lookback)
+  const closes = recent.map(c => c.close)
+  const rsiValues = calculateRSIArray(recent, 14)
+  // RSI for each candle not just current
+
+  // Find price swing highs and lows
+  let priceHighIdx = 0
+  let priceLowIdx = 0
+  let rsiHighIdx = 0
+  let rsiLowIdx = 0
+
+  for (let i = 1; i < recent.length - 1; i++) {
+    if (closes[i] > closes[priceHighIdx])
+      priceHighIdx = i
+    if (closes[i] < closes[priceLowIdx])
+      priceLowIdx = i
+    if (rsiValues[i] > rsiValues[rsiHighIdx])
+      rsiHighIdx = i
+    if (rsiValues[i] < rsiValues[rsiLowIdx])
+      rsiLowIdx = i
+  }
+
+  const lastPriceHigh = closes[priceHighIdx]
+  const prevPriceHigh = Math.max(
+    ...closes.slice(0, priceHighIdx)
+  )
+  const lastRsiHigh = rsiValues[rsiHighIdx]
+  const prevRsiHigh = Math.max(
+    ...rsiValues.slice(0, rsiHighIdx)
+  )
+
+  const lastPriceLow = closes[priceLowIdx]
+  const prevPriceLow = Math.min(
+    ...closes.slice(0, priceLowIdx)
+  )
+  const lastRsiLow = rsiValues[rsiLowIdx]
+  const prevRsiLow = Math.min(
+    ...rsiValues.slice(0, rsiLowIdx)
+  )
+
+  // Bearish divergence: price makes higher high
+  // but RSI makes lower high
+  const bearishDivergence =
+    lastPriceHigh > prevPriceHigh &&
+    lastRsiHigh < prevRsiHigh &&
+    rsiValues[rsiValues.length-1] > 65
+    // Current RSI still elevated
+
+  // Bullish divergence: price makes lower low
+  // but RSI makes higher low
+  const bullishDivergence =
+    lastPriceLow < prevPriceLow &&
+    lastRsiLow > prevRsiLow &&
+    rsiValues[rsiValues.length-1] < 35
+    // Current RSI still depressed
+
+  return {
+    bullish: bullishDivergence,
+    bearish: bearishDivergence,
+    currentRsi: rsiValues[rsiValues.length-1]
+  }
+}
+
+// Run on BOTH timeframes
+const divergence5m = detectDivergence(candles5m)
+const divergence15m = detectDivergence(candles15m)
+
+// Both must agree for reversal signal
+const buyReversal = 
+  divergence5m.bullish && divergence15m.bullish
+const sellReversal = 
+  divergence5m.bearish && divergence15m.bearish
+
+If neither: return NONE
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — BB EXTREME DETECTOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function detectBBExtreme(
+  candles5m: Candle[]
+): BBExtremeResult {
+
+  const bb = calculateBB(candles5m, 20, 2.0)
+  const bb25 = calculateBB(candles5m, 20, 2.5)
+  const currentPrice = 
+    candles5m[candles5m.length-1].close
+
+  const aboveUpper = currentPrice > bb.upper
+  const belowLower = currentPrice < bb.lower
+  const above25 = currentPrice > bb25.upper
+  const below25 = currentPrice < bb25.lower
+
+  return {
+    aboveUpper,   // Standard 2σ breach
+    belowLower,
+    above25sigma: above25,  // Strong 2.5σ breach
+    below25sigma: below25,
+    // Premium signal = divergence + 2.5σ breach
+    premiumSell: above25,
+    premiumBuy: below25,
+    middle: bb.middle
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — 1M CONFIRMATION CANDLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After divergence and BB extreme confirmed,
+wait for 1m candle confirmation.
+
+function check1mConfirmation(
+  candles1m: Candle[],
+  direction: 'BUY' | 'SELL'
+): boolean {
+
+  const last = candles1m[candles1m.length-1]
+  const prev = candles1m[candles1m.length-2]
+
+  const candleBody = Math.abs(last.close - last.open)
+  const candleRange = last.high - last.low
+  const bodyRatio = candleBody / candleRange
+
+  if (direction === 'BUY') {
+    // Confirmation: green candle
+    const isGreen = last.close > last.open
+    // Closes above midpoint of previous candle
+    const abovePrevMid = last.close > 
+      (prev.high + prev.low) / 2
+    // Body dominated (not wick dominated)
+    const bodyDominated = bodyRatio > 0.5
+    // Wick in trend direction not too large
+    const lowerWick = last.open - last.low
+    const upperBody = last.close - last.open
+    const wickNotTooLarge = lowerWick < upperBody * 2
+
+    const confirmed = isGreen && abovePrevMid && 
+      bodyDominated && wickNotTooLarge
+
+    console.log(`1m BUY confirmation:
+      Green: ${isGreen}
+      Above prev mid: ${abovePrevMid}
+      Body dominated: ${bodyDominated}
+      Wick ok: ${wickNotTooLarge}
+      CONFIRMED: ${confirmed}`)
+
+    return confirmed
+  }
+
+  if (direction === 'SELL') {
+    const isRed = last.close < last.open
+    const belowPrevMid = last.close < 
+      (prev.high + prev.low) / 2
+    const bodyDominated = bodyRatio > 0.5
+    const upperWick = last.high - last.open
+    const lowerBody = last.open - last.close
+    const wickNotTooLarge = upperWick < lowerBody * 2
+
+    return isRed && belowPrevMid && 
+      bodyDominated && wickNotTooLarge
+  }
+
+  return false
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — REVERSAL SCORING ENGINE (0-25)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+COMPONENT 1 — SESSION EXHAUSTION (0-10)
+How far has price moved from session open?
+
+function scoreSessionExhaustion(
+  sessionMove: SessionMoveResult,
+  direction: 'BUY' | 'SELL'
+): number {
+
+  const move = sessionMove.currentMove
+  const moveDir = sessionMove.moveDirection
+
+  // Reversal direction must oppose session move
+  if (direction === 'BUY' && moveDir !== 'DOWN')
+    return 0 // Session moved UP, not down
+  if (direction === 'SELL' && moveDir !== 'UP')
+    return 0 // Session moved DOWN, not up
+
+  if (move >= 600) return 10 // Extreme exhaustion
+  if (move >= 500) return 9
+  if (move >= 450) return 8
+  if (move >= 400) return 7
+  if (move >= 375) return 6
+  if (move >= 350) return 5 // Minimum threshold
+  return 0
+}
+
+COMPONENT 2 — DIVERGENCE STRENGTH (0-10)
+How strong is the divergence signal?
+
+function scoreDivergenceStrength(
+  div5m: DivergenceResult,
+  div15m: DivergenceResult,
+  direction: 'BUY' | 'SELL'
+): number {
+
+  let score = 0
+
+  if (direction === 'BUY') {
+    if (div5m.bullish) score += 4
+    if (div15m.bullish) score += 4
+    // RSI extreme bonus
+    if (div5m.currentRsi < 25) score += 2
+    else if (div5m.currentRsi < 30) score += 1
+  }
+
+  if (direction === 'SELL') {
+    if (div5m.bearish) score += 4
+    if (div15m.bearish) score += 4
+    if (div5m.currentRsi > 75) score += 2
+    else if (div5m.currentRsi > 70) score += 1
+  }
+
+  return Math.min(score, 10)
+}
+
+COMPONENT 3 — BB BREACH QUALITY (0-5)
+How far beyond the bands is price?
+
+function scoreBBBreach(
+  bbExtreme: BBExtremeResult,
+  direction: 'BUY' | 'SELL'
+): number {
+
+  if (direction === 'BUY') {
+    if (bbExtreme.below25sigma) return 5
+    // 2.5σ breach = maximum score
+    if (bbExtreme.belowLower) return 3
+    // 2σ breach = moderate score
+    return 1 // Near lower band
+  }
+
+  if (direction === 'SELL') {
+    if (bbExtreme.above25sigma) return 5
+    if (bbExtreme.aboveUpper) return 3
+    return 1
+  }
+
+  return 0
+}
+
+TOTAL REVERSAL SCORE = C1 + C2 + C3
+Maximum: 25 points
+Threshold: 20/25
+
+STAKE CALCULATION:
+Standard reversal (score 20-23):
+  stake = balance * 0.01
+Premium reversal (score 24-25, 2.5σ breach):
+  stake = balance * 0.0125 (1.25×)
+  Log: "Premium reversal — 1.25× stake"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — REVERSAL ENTRY AND EXIT RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ENTRY:
+Direction is OPPOSITE to session move:
+If session moved UP 350+ pips: look for SELL
+If session moved DOWN 350+ pips: look for BUY
+
+Entry price: close of confirmation 1m candle
+
+STOP LOSS:
+Place stop beyond the extreme wick:
+BUY reversal: stop = lowest low of last 
+  3 candles on 5m - 5 pip buffer
+SELL reversal: stop = highest high of last 
+  3 candles on 5m + 5 pip buffer
+
+Stop distance minimum: 20 pips
+Stop distance maximum: 80 pips
+If calculated stop > 80 pips: reject trade
+Log: "Reversal stop too wide — skipping"
+
+TAKE PROFIT:
+Single target only — middle Bollinger Band
+(no TP1/TP2 split for reversals)
+tp = bbExtreme.middle
+  // The 20-period SMA is the natural target
+
+Minimum TP distance: 30 pips from entry
+If middle BB is less than 30 pips away: skip
+Log: "Target too close — insufficient reward"
+
+R:R minimum: 1.5:1
+Calculate: (tp - entry) / (entry - stop)
+If R:R < 1.5: reject trade
+Log: "R:R below 1.5 minimum for reversal"
+
+TIME STOP: 20 minutes
+Reversal trades must resolve quickly.
+At 20 minutes: close immediately at market
+Regardless of profit or loss.
+
+30-MINUTE COOLDOWN AFTER EACH REVERSAL:
+After any reversal trade closes:
+No new reversal entries for 30 minutes
+regardless of how good the next signal looks.
+This prevents revenge trading at the same level.
+
+DAILY LIMIT:
+Maximum 5 reversal trades per day
+Reset at midnight UTC
+When daily limit hit: log and skip all signals
+"Daily reversal limit reached (5/5)"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — REVERSAL BACKTEST CONFIGURATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create reversaltest100 account:
+username: "reversaltest100"
+password: "Reversal100!"
+balance: $5,000
+profile: safe
+strategy: V75 Reversal
+mode: paper
+
+Run backtest:
+Account: reversaltest100
+Period: December 31 2025 to May 30 2026
+
+Expected characteristics:
+Trades: 30-80 over 5 months
+(more frequent than swing, less than sniper)
+Average duration: 8-15 minutes
+Win rate target: 58-68%
+(reversal at genuine extremes has high WR)
+Average win: medium (to middle BB)
+Average loss: tight (20-80 pip stop)
+Profit factor target: 1.5+
+
+Log every:
+Session move calculation
+Divergence detection result on both TFs
+BB extreme reading
+1m confirmation result
+Entry and exit with reason
