@@ -261,7 +261,7 @@ export async function runV10Backtest(
   const WARMUP = 50;
   // Time stop: 24 x 5m bars = 2 hours (V10 is a short-duration mean reversion strategy)
   const MAX_HOLD_BARS = 24;
-  const SCORE_THRESHOLD = config.scoreThreshold ?? 18;
+  const SCORE_THRESHOLD = config.scoreThreshold ?? 8;
   const MAX_RISK = (config.maxRiskPercent ?? 1.0) / 100;
   const MAX_TRADES_DAY = config.maxTradesDay ?? 4;
   const CONS_LOSS_STOP = config.consecutiveLossStop ?? 3;

@@ -1023,7 +1023,73 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {sse.scores.rejectionReason && (
+                {/* Live "Why No Signal" diagnostic */}
+                {sse.scores.direction === "NONE" && (() => {
+                  const total = sse.scores.total ?? 0;
+                  const c1 = sse.scores.c1 ?? 0;
+                  const c2 = sse.scores.c2 ?? 0;
+                  const adx = sse.scores.adx15m ?? 0;
+                  const rsi = sse.scores.rsi5m ?? 50;
+
+                  const checks: { label: string; pass: boolean; detail: string }[] = [
+                    {
+                      label: "1h Trend Aligned",
+                      pass: c1 >= 4,
+                      detail: c1 >= 4 ? `Score ${c1.toFixed(1)}/10 ✓` : `Score ${c1.toFixed(1)}/10 — need ≥4 for direction`,
+                    },
+                    {
+                      label: "15m Momentum",
+                      pass: c2 >= 1,
+                      detail: c2 >= 1 ? `Score ${c2.toFixed(1)} ✓` : `Score ${c2.toFixed(1)} — EMAs not aligned`,
+                    },
+                    {
+                      label: "ADX Filter",
+                      pass: adx < 25,
+                      detail: adx < 25 ? `ADX ${adx.toFixed(1)} (range-bound) ✓` : `ADX ${adx.toFixed(1)} — strong trend, paused`,
+                    },
+                    {
+                      label: "RSI Window",
+                      pass: rsi < 65 && rsi > 35,
+                      detail: rsi < 65 && rsi > 35 ? `RSI ${rsi.toFixed(1)} ✓` : rsi >= 65 ? `RSI ${rsi.toFixed(1)} — overbought` : `RSI ${rsi.toFixed(1)} — oversold`,
+                    },
+                    {
+                      label: "Score Threshold",
+                      pass: total >= 16,
+                      detail: total >= 16 ? `${total.toFixed(1)}/25 ✓` : `${total.toFixed(1)}/25 — need 16+`,
+                    },
+                  ];
+
+                  const failing = checks.filter(c => !c.pass);
+                  const firstFail = failing[0];
+
+                  return (
+                    <div className="mt-3 pt-3 border-t border-border">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide">Why No Signal</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {checks.map(({ label, pass, detail }) => (
+                          <div key={label} className="flex items-center gap-2">
+                            <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${pass ? "bg-primary/20 text-primary" : "bg-accent-red/20 text-accent-red"}`}>
+                              {pass ? "✓" : "✗"}
+                            </span>
+                            <span className={`text-[11px] ${pass ? "text-text-secondary" : "text-foreground font-medium"}`}>{label}</span>
+                            <span className="text-[10px] text-text-secondary ml-auto">{detail}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {firstFail && (
+                        <div className="mt-2 px-2 py-1.5 rounded bg-yellow-500/10 border border-yellow-500/20">
+                          <p className="text-[11px] text-yellow-400">
+                            Primary blocker: <span className="font-semibold">{firstFail.label}</span> — {firstFail.detail}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {sse.scores.rejectionReason && sse.scores.direction !== "NONE" && (
                   <div className="mt-2 text-xs text-text-secondary">
                     ↳ {sse.scores.rejectionReason}
                   </div>

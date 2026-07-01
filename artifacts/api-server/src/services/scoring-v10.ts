@@ -196,7 +196,7 @@ export function detectRangeCleanliness(candles5m: Candle[]): RangeQualityResult 
     rangeHigh,
     rangeLow,
     midpoint,
-    tradeable: cleanlinessScore >= 6,
+    tradeable: cleanlinessScore >= 4,
   };
 }
 
@@ -336,16 +336,16 @@ export function scoreV10(
 
   // Step 3: Try BUY
   const buyC2 = scoreV10Entry(candles5m, "BUY");
-  if (buyC2 >= 6) {
+  if (buyC2 >= 3) {
     const buyC3 = scoreRejection(candles1m, "BUY");
     const buyTotal = c1 + buyC2 + buyC3;
-    if (buyTotal >= 18) {
+    if (buyTotal >= 8) {
       const stopDist = Math.max(15, Math.min(50, atrValue * 0.8));
       const sl = currentPrice - stopDist;
       const tp = bb.middle;
       const tpDist = Math.abs(tp - currentPrice);
       const rr = tpDist / stopDist;
-      if (tpDist >= 10 && rr >= 1.2) {
+      if (tpDist >= 5 && rr >= 0.8) {
         logger.info(`V10 BUY signal: score=${buyTotal}/25 c1=${c1} c2=${buyC2} c3=${buyC3} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
         return {
           total: buyTotal, c1, c2: buyC2, c3: buyC3,
@@ -362,16 +362,16 @@ export function scoreV10(
 
   // Step 4: Try SELL
   const sellC2 = scoreV10Entry(candles5m, "SELL");
-  if (sellC2 >= 6) {
+  if (sellC2 >= 3) {
     const sellC3 = scoreRejection(candles1m, "SELL");
     const sellTotal = c1 + sellC2 + sellC3;
-    if (sellTotal >= 18) {
+    if (sellTotal >= 8) {
       const stopDist = Math.max(15, Math.min(50, atrValue * 0.8));
       const sl = currentPrice + stopDist;
       const tp = bb.middle;
       const tpDist = Math.abs(currentPrice - tp);
       const rr = tpDist / stopDist;
-      if (tpDist >= 10 && rr >= 1.2) {
+      if (tpDist >= 5 && rr >= 0.8) {
         logger.info(`V10 SELL signal: score=${sellTotal}/25 c1=${c1} c2=${sellC2} c3=${sellC3} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
         return {
           total: sellTotal, c1, c2: sellC2, c3: sellC3,

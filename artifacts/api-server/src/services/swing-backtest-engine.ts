@@ -242,21 +242,21 @@ function getSwingSignal(
   const ema21_5m = calcEMA(closes5m, Math.min(21, closes5m.length));
   const rsi5m = calcRSI(closes5m, 14);
   const price = candle.close;
-  const nearEMA = Math.abs(price - ema21_5m) / ema21_5m < 0.005;
+  const nearEMA = Math.abs(price - ema21_5m) / ema21_5m < 0.015;
 
   // Log every 500 candles for diagnostics
   if (idx % 500 === 0) {
     console.log(`[SW] Eval i=${idx} price=${price.toFixed(2)} 4h:EMA20=${ema20_4h.toFixed(0)} EMA50=${ema50_4h.toFixed(0)} bull=${bull4h} | 1h:EMA9=${ema9_1h.toFixed(0)} EMA21=${ema21_1h.toFixed(0)} bull=${bull1h} | 5m:EMA21=${ema21_5m.toFixed(0)} RSI=${rsi5m.toFixed(1)} nearEMA=${nearEMA}`);
   }
 
-  // BUY: 4h bullish + 1h bullish + price pulled back to 5m EMA21 + RSI not overbought
-  if (bull4h && bull1h && nearEMA && rsi5m > 30 && rsi5m < 55) {
+  // BUY: 4h bullish + (1h bullish or neutral) + price near 5m EMA21 pullback + RSI not overbought
+  if (bull4h && (bull1h || !bear1h) && nearEMA && rsi5m > 25 && rsi5m < 65) {
     console.log(`[SW] BUY SIGNAL at i=${idx} time=${new Date(candle.time * 1000).toISOString()} price=${price.toFixed(2)} EMA21_5m=${ema21_5m.toFixed(2)} RSI=${rsi5m.toFixed(1)}`);
     return "BUY";
   }
 
-  // SELL: 4h bearish + 1h bearish + price rallied to 5m EMA21 + RSI not oversold
-  if (bear4h && bear1h && nearEMA && rsi5m > 45 && rsi5m < 70) {
+  // SELL: 4h bearish + (1h bearish or neutral) + price near 5m EMA21 + RSI not oversold
+  if (bear4h && (bear1h || !bull1h) && nearEMA && rsi5m > 35 && rsi5m < 75) {
     console.log(`[SW] SELL SIGNAL at i=${idx} time=${new Date(candle.time * 1000).toISOString()} price=${price.toFixed(2)} EMA21_5m=${ema21_5m.toFixed(2)} RSI=${rsi5m.toFixed(1)}`);
     return "SELL";
   }
