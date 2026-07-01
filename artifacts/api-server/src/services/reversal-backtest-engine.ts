@@ -354,6 +354,12 @@ function calcSessionMoveBT(candles5m: BTCandle[], currentTime: number): { movePi
 
 // ── Main Reversal Backtest ────────────────────────────────────────────────────
 
+export type ProgressCallback = (p: {
+  candleIndex: number; totalCandles: number; tradesExecuted: number;
+  wins: number; currentBalance: number; phase: "fetching" | "running";
+  funnel: Record<string, number>;
+}) => void;
+
 export async function runReversalBacktest(
   strategyId: string,
   config: ReversalBacktestConfig,
@@ -361,7 +367,8 @@ export async function runReversalBacktest(
   dateTo: number,
   runBy: string,
   forceRefresh: boolean,
-  startingBalance: number
+  startingBalance: number,
+  onProgress?: ProgressCallback,
 ): Promise<ReversalBacktestResult> {
   const runId = `REV_${Date.now()}_${strategyId}`;
 
@@ -424,8 +431,19 @@ export async function runReversalBacktest(
   let divergenceDebugLogs = 0;
 
   // ── Main loop ─────────────────────────────────────────────────────────────
+  let revWins = 0;
   for (let i = WARMUP; i < candles5m.length; i++) {
     const candle = candles5m[i]!;
+
+    if (i % 200 === 0) {
+      onProgress?.({
+        candleIndex: i, totalCandles: candles5m.length,
+        tradesExecuted: tradeList.length, wins: revWins,
+        currentBalance: balance, phase: "running",
+        funnel: { ...rej },
+      });
+    }
+
     const dayStr = new Date(candle.time * 1000).toISOString().slice(0, 10);
     if (dayStr !== lastTradeDay) { dailyTrades = 0; lastTradeDay = dayStr; }
 
@@ -489,6 +507,7 @@ export async function runReversalBacktest(
         const rr = Math.abs(openTrade.takeProfit - openTrade.entryPrice) / Math.abs(openTrade.entryPrice - openTrade.stopLoss);
 
         tradeNum++;
+        if (pnl > 0) revWins++;
         tradeList.push({
           tradeNum,
           direction: openTrade.direction,

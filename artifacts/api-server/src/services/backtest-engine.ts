@@ -397,6 +397,17 @@ function getHistogramBucket(scoreVal: number): number {
 
 // ─── Run Deterministic Backtest ───────────────────────────────────────────────
 
+export interface BacktestProgress {
+  candleIndex: number;
+  totalCandles: number;
+  tradesExecuted: number;
+  wins: number;
+  currentBalance: number;
+  phase: "fetching" | "running";
+  funnel: Record<string, number>;
+}
+export type ProgressCallback = (p: BacktestProgress) => void;
+
 export async function runDeterministicBacktest(
   strategyId: string,
   config: BacktestStrategyConfig,
@@ -405,6 +416,7 @@ export async function runDeterministicBacktest(
   runBy: string,
   forceRefresh = false,
   startingBalance = 5000,
+  onProgress?: ProgressCallback,
 ): Promise<BacktestRunResult> {
   const runId = `BT_${Date.now()}_${runBy}`;
   logger.info({ runId, strategyId, dateFrom, dateTo }, "Backtest started");
@@ -499,6 +511,13 @@ export async function runDeterministicBacktest(
 
     if (i % 200 === 0) {
       console.log(`[BT] Candle ${i}/${raw5m.length} time=${new Date(candle.time * 1000).toISOString()} close=${candle.close} balance=${balance} trades=${tradeList.length}`);
+      onProgress?.({
+        candleIndex: i, totalCandles: raw5m.length,
+        tradesExecuted: tradeList.length,
+        wins: tradeList.filter(t => t.pnl > 0).length,
+        currentBalance: balance, phase: "running",
+        funnel: { scoreNull: scoreNullCount, belowThreshold: scoreBelowThreshold, dirNone: scoreDirectionNone, dailyLimit: tradeDailyLimit, consLoss: tradeConsLossLimit, session: sessionFiltered },
+      });
     }
 
     const dayTs = Math.floor(candle.time / 86400) * 86400;

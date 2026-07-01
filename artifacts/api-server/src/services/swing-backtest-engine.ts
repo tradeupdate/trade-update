@@ -275,6 +275,12 @@ function calcSharpe(returns: number[]): number {
 
 // ── Main Swing Backtest ───────────────────────────────────────────────────────
 
+export type ProgressCallback = (p: {
+  candleIndex: number; totalCandles: number; tradesExecuted: number;
+  wins: number; currentBalance: number; phase: "fetching" | "running";
+  funnel: Record<string, number>;
+}) => void;
+
 export async function runSwingBacktest(
   strategyId: string,
   config: SwingBacktestConfig,
@@ -282,7 +288,8 @@ export async function runSwingBacktest(
   dateTo: number,
   runBy: string,
   forceRefresh: boolean,
-  startingBalance: number
+  startingBalance: number,
+  onProgress?: ProgressCallback,
 ): Promise<SwingBacktestResult> {
   const runId = `SW_${Date.now()}_${strategyId}`;
 
@@ -358,8 +365,18 @@ export async function runSwingBacktest(
   let h1Ptr = 0;
   let h4Ptr = 0;
 
+  let swingWins = 0;
   for (let i = WARMUP; i < candles5m.length; i++) {
     const candle = candles5m[i]!;
+
+    if (i % 200 === 0) {
+      onProgress?.({
+        candleIndex: i, totalCandles: candles5m.length,
+        tradesExecuted: tradeList.length, wins: swingWins,
+        currentBalance: balance, phase: "running",
+        funnel: { todayTrades, consLosses },
+      });
+    }
 
     // Daily reset
     const day = new Date(candle.time * 1000).toISOString().slice(0, 10);
@@ -438,6 +455,7 @@ export async function runSwingBacktest(
         const dd = (peak - balance) / peak;
         if (dd > maxDD) maxDD = dd;
         consLosses = totalPnl > 0 ? 0 : consLosses + 1;
+        if (totalPnl > 0) swingWins++;
 
         tradeList.push({
           tradeNum: tradeList.length + 1,

@@ -520,6 +520,123 @@ router.post("/backtest/run", async (req, res) => {
   }
 });
 
+// Backtest — SSE streaming endpoint (same logic, progress events via SSE)
+router.post("/backtest/stream", async (req, res) => {
+  const { strategyId, dateFrom, dateTo, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour } = req.body;
+  if (!strategyId) { res.status(400).json({ error: "strategyId required" }); return; }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const sendEvent = (data: object) => {
+    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client disconnected */ }
+  };
+
+  try {
+    const strategyRows = await db.select().from(strategiesTable).where(eq(strategiesTable.id, strategyId)).limit(1);
+    const strategy = strategyRows[0];
+    if (!strategy) { sendEvent({ type: "error", message: "Strategy not found" }); res.end(); return; }
+
+    const now = Math.floor(Date.now() / 1000);
+    const from = dateFrom ?? now - 86400 * 7;
+    const to   = dateTo   ?? now;
+
+    const config = {
+      scoreThreshold: strategy.scoreThreshold ?? 16,
+      maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+      stopMultiplier: strategy.stopMultiplier ?? 1.5,
+      tp1Multiplier:  strategy.tp1Multiplier  ?? 2.0,
+      tp2Multiplier:  strategy.tp2Multiplier  ?? 3.0,
+      maxTradesDay:   strategy.maxTradesDay   ?? 4,
+      consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+      sessionFilterEnabled: sessionFilterEnabled !== false,
+      sessionStartHour: sessionStartHour ?? 6,
+      sessionEndHour:   sessionEndHour   ?? 20,
+    };
+
+    sendEvent({ type: "progress", candleIndex: 0, totalCandles: 0, tradesExecuted: 0, wins: 0, currentBalance: 5000, phase: "fetching", funnel: {} });
+
+    const onProgress = (p: object) => sendEvent({ type: "progress", ...p });
+
+    let result: Awaited<ReturnType<typeof runDeterministicBacktest>> | Awaited<ReturnType<typeof runSwingBacktest>> | Awaited<ReturnType<typeof runReversalBacktest>> | Awaited<ReturnType<typeof runV10Backtest>>;
+
+    if (strategy.type === "swing") {
+      const swingConfig = {
+        scoreThreshold: strategy.scoreThreshold ?? 20,
+        maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+        stopMultiplier: strategy.stopMultiplier ?? 2.0,
+        tp1Multiplier:  strategy.tp1Multiplier  ?? 2.0,
+        tp2Multiplier:  strategy.tp2Multiplier  ?? 4.0,
+        maxTradesDay:   strategy.maxTradesDay   ?? 3,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 2,
+      };
+      result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+    } else if (strategy.type === "mean_reversion") {
+      const v10Config = {
+        scoreThreshold: strategy.scoreThreshold ?? 18,
+        maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+        maxTradesDay:   strategy.maxTradesDay   ?? 4,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+      };
+      result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+    } else if (strategy.type === "reversal") {
+      const reversalConfig = {
+        scoreThreshold: strategy.scoreThreshold ?? 20,
+        maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+        maxTradesDay:   strategy.maxTradesDay   ?? 5,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+      };
+      result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+    } else {
+      result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+    }
+
+    const id  = randomUUID();
+    const now2 = Math.floor(Date.now() / 1000);
+    await db.insert(backtestResultsTable).values({
+      id, runId: result.runId, strategyId, runBy: req.user!.userId,
+      dateFrom: from, dateTo: to,
+      totalTrades: result.totalTrades, wins: result.wins, losses: result.losses,
+      winRate: result.winRate, totalPnl: result.totalPnl,
+      profitFactor: result.profitFactor, maxDrawdown: result.maxDrawdown,
+      equityCurve: JSON.stringify(result.equityCurve),
+      bestTrade: result.bestTrade, worstTrade: result.worstTrade,
+      avgDurationMinutes: result.avgDurationMinutes, sharpeRatio: result.sharpeRatio,
+      candlesUsed: result.candlesUsed, candleHash: result.candleHash,
+      dataSource: result.dataSource, cacheFile: result.cacheFile,
+      createdAt: now2,
+    });
+
+    const isSniperOnly = strategy.type !== "swing" && strategy.type !== "reversal" && strategy.type !== "mean_reversion";
+    sendEvent({
+      type: "complete",
+      result: {
+        id, runId: result.runId, strategyId,
+        totalTrades: result.totalTrades, wins: result.wins, losses: result.losses,
+        winRate: result.winRate, profitFactor: result.profitFactor,
+        maxDrawdown: result.maxDrawdown, totalPnl: result.totalPnl,
+        equityCurve: result.equityCurve,
+        bestTrade: result.bestTrade, worstTrade: result.worstTrade,
+        avgDurationMinutes: result.avgDurationMinutes, sharpeRatio: result.sharpeRatio,
+        candlesUsed: result.candlesUsed, candleHash: result.candleHash,
+        dataSource: result.dataSource, dateFrom: from, dateTo: to,
+        featureImportance: isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).featureImportance : null,
+        regimeStats:       isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).regimeStats       : null,
+        scoreHistogram:    isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).scoreHistogram    : null,
+        partialExitStats:  (result as Awaited<ReturnType<typeof runSwingBacktest>>).partialExitStats ?? null,
+        trades: result.trades, strategyType: strategy.type,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, "Backtest stream error");
+    sendEvent({ type: "error", message: err instanceof Error ? err.message : "Server error" });
+  }
+  res.end();
+});
+
 router.get("/backtest/results", async (_req, res) => {
   try {
     const results = await db.select().from(backtestResultsTable).orderBy(desc(backtestResultsTable.createdAt)).limit(50);

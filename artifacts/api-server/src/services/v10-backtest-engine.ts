@@ -209,6 +209,12 @@ function calcSharpe(returns: number[]): number {
 
 // ── Main V10 Backtest ─────────────────────────────────────────────────────────
 
+export type ProgressCallback = (p: {
+  candleIndex: number; totalCandles: number; tradesExecuted: number;
+  wins: number; currentBalance: number; phase: "fetching" | "running";
+  funnel: Record<string, number>;
+}) => void;
+
 export async function runV10Backtest(
   strategyId: string,
   config: {
@@ -221,7 +227,8 @@ export async function runV10Backtest(
   dateTo: number,
   runBy: string,
   forceRefresh: boolean,
-  startingBalance: number
+  startingBalance: number,
+  onProgress?: ProgressCallback,
 ): Promise<SwingBacktestResult> {
   const runId = `V10_${Date.now()}_${strategyId}`;
 
@@ -304,8 +311,18 @@ export async function runV10Backtest(
   // Advance 15m pointer
   let m15Ptr = 0;
 
+  let v10Wins = 0;
   for (let i = WARMUP; i < candles5m.length; i++) {
     const candle = candles5m[i]!;
+
+    if (i % 200 === 0) {
+      onProgress?.({
+        candleIndex: i, totalCandles: candles5m.length,
+        tradesExecuted: tradesExecuted, wins: v10Wins,
+        currentBalance: balance, phase: "running",
+        funnel: { scoreNull: scoreNullCount, trendRisk: trendRiskFiltered, belowThreshold, dirNone, dailyLimit: dailyLimitBlocked, consLoss: consLossBlocked },
+      });
+    }
 
     // Daily reset
     const day = new Date(candle.time * 1000).toISOString().slice(0, 10);
@@ -359,6 +376,7 @@ export async function runV10Backtest(
           c3: openTrade.c3,
           stage2Added: false,
         };
+        if (pnl > 0) v10Wins++;
         tradeList.push(tradeDetail);
         returns.push(pnl / startingBalance);
         equityCurve.push({ index: tradeList.length - 1, value: balance });

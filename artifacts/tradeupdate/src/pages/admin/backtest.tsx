@@ -8,12 +8,23 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import {
   Play, BarChart2, Loader2, TrendingUp, TrendingDown,
   Clock, Target, RefreshCw, Database, AlertTriangle, Hash,
-  Activity, Layers, GitBranch, Zap, X, List,
+  Activity, Layers, GitBranch, Zap, X, List, Cpu,
 } from "lucide-react";
+
+interface StreamProgress {
+  type: "progress";
+  candleIndex: number;
+  totalCandles: number;
+  tradesExecuted: number;
+  wins: number;
+  currentBalance: number;
+  phase: "fetching" | "running";
+  funnel: Record<string, number>;
+}
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import {
