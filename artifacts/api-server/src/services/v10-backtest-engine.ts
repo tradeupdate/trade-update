@@ -292,6 +292,7 @@ export async function runV10Backtest(
     c1: number;
     c2: number;
     c3: number;
+    tier: "T1" | "T2";
   }
 
   let openTrade: OpenV10Trade | null = null;
@@ -305,6 +306,8 @@ export async function runV10Backtest(
   let belowThreshold = 0;
   let dirNone = 0;
   let tradesExecuted = 0;
+  let t1Executed = 0;
+  let t2Executed = 0;
   let dailyLimitBlocked = 0;
   let consLossBlocked = 0;
 
@@ -424,8 +427,13 @@ export async function runV10Backtest(
       console.log(`[V10] Score sample i=${i}: total=${v10Result.total} dir=${v10Result.direction} c1=${v10Result.c1} c2=${v10Result.c2} c3=${v10Result.c3} price=${candle.close.toFixed(4)}`);
     }
 
-    if (v10Result.total < SCORE_THRESHOLD) { belowThreshold++; continue; }
+    // T1 quality gate lives inside scoreV10 itself (returns direction=NONE if not qualified).
+    // T2 has its own threshold (lower conviction, half size).
+    // SCORE_THRESHOLD from config is no longer used — it duplicates the internal gate.
+    const tradeTier = v10Result.tier ?? "T1";
+    const T2_SCORE_THRESHOLD = 6;
     if (v10Result.direction === "NONE") { dirNone++; continue; }
+    if (tradeTier === "T2" && v10Result.total < T2_SCORE_THRESHOLD) { belowThreshold++; continue; }
 
     // ── Validate stop/TP levels ───────────────────────────────────────────
     let { stopLoss, takeProfit } = v10Result;
@@ -463,7 +471,9 @@ export async function runV10Backtest(
     }
 
     // ── Open trade ────────────────────────────────────────────────────────
-    const stake = Math.max(1, Math.round(balance * MAX_RISK * 100) / 100);
+    // T2 trades use half position size (lower conviction approach signal)
+    const tierRiskMultiplier = tradeTier === "T2" ? 0.5 : 1.0;
+    const stake = Math.max(1, Math.round(balance * MAX_RISK * tierRiskMultiplier * 100) / 100);
 
     openTrade = {
       direction: v10Result.direction,
@@ -478,12 +488,14 @@ export async function runV10Backtest(
       c1: v10Result.c1,
       c2: v10Result.c2,
       c3: v10Result.c3,
+      tier: tradeTier,
     };
 
     todayTrades++;
     tradesExecuted++;
+    if (tradeTier === "T1") t1Executed++; else t2Executed++;
 
-    console.log(`[V10] >>> TRADE ENTRY #${tradesExecuted} dir=${v10Result.direction} score=${v10Result.total}(${v10Result.c1}/${v10Result.c2}/${v10Result.c3}) entry=${entryPrice.toFixed(4)} sl=${stopLoss.toFixed(4)} tp=${takeProfit.toFixed(4)} stake=$${stake}`);
+    console.log(`[V10] >>> TRADE ENTRY #${tradesExecuted} [${tradeTier}] dir=${v10Result.direction} score=${v10Result.total}(${v10Result.c1}/${v10Result.c2}/${v10Result.c3}) entry=${entryPrice.toFixed(4)} sl=${stopLoss.toFixed(4)} tp=${takeProfit.toFixed(4)} stake=$${stake}`);
   }
 
   // Close any open trade at end of data
@@ -520,6 +532,7 @@ export async function runV10Backtest(
   console.log(`\n=== V10 BACKTEST COMPLETE ===`);
   console.log(`5m candles: ${candles5m.length - WARMUP} processed`);
   console.log(`scoreNull=${scoreNullCount} trendRisk=${trendRiskFiltered} belowThreshold=${belowThreshold} dirNone=${dirNone} dailyLimit=${dailyLimitBlocked} consLoss=${consLossBlocked}`);
+  console.log(`Tier breakdown: T1=${t1Executed} (full size) T2=${t2Executed} (half size)`);
 
   const wins = tradeList.filter(t => t.pnl > 0).length;
   const losses = tradeList.filter(t => t.pnl <= 0).length;
@@ -571,6 +584,8 @@ export async function runV10Backtest(
       dailyLimit: dailyLimitBlocked,
       consLoss: consLossBlocked,
       executed: tradesExecuted,
+      t1Executed,
+      t2Executed,
       totalProcessed: candles5m.length - WARMUP,
     },
   };

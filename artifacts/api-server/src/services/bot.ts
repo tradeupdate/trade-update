@@ -845,6 +845,9 @@ class BotManager {
       ? user.stakeSize
       : balance * riskPct;
     if (state.recoveryModeActive) stake *= 0.5;
+    // Tier 2 (BB approach) trades use half position size by design
+    const v10Tier = result.tier ?? "T1";
+    if (v10Tier === "T2") stake *= 0.5;
     stake = Math.max(0.5, Math.min(1000, Math.round(stake * 100) / 100));
 
     const entryPrice = result.entryPrice;
@@ -861,7 +864,7 @@ class BotManager {
       recoveryModeActive: state.recoveryModeActive ? 1 : 0,
       winStreakCautionActive: state.winStreakCautionActive ? 1 : 0,
       sessionName: "24/7",
-      rangeContext: `range:${result.rangeLow.toFixed(2)}-${result.rangeHigh.toFixed(2)}|tp_mid_bb:${result.takeProfit.toFixed(4)}`,
+      rangeContext: `range:${result.rangeLow.toFixed(2)}-${result.rangeHigh.toFixed(2)}|tp_mid_bb:${result.takeProfit.toFixed(4)}|tier:${v10Tier}`,
       openedAt: now,
       rsiAtEntry: result.rsi, stochAtEntry: null, macdAtEntry: null,
     });
@@ -891,7 +894,7 @@ class BotManager {
 
     this.broadcastToUser(userId, "trade", { action: "opened", trade: state.openTrade });
     this.broadcastBotEvent(userId, state);
-    this.logActivity(userId, `V10 ${result.direction} @ ${entryPrice.toFixed(4)} — SL ${result.stopLoss.toFixed(4)} — TP mid-BB ${result.takeProfit.toFixed(4)} — Score ${result.total}/25 — cleanliness ${result.cleanlinessScore}/10`, "info").catch(() => {});
+    this.logActivity(userId, `V10 [${v10Tier}] ${result.direction} @ ${entryPrice.toFixed(4)} — SL ${result.stopLoss.toFixed(4)} — TP mid-BB ${result.takeProfit.toFixed(4)} — Score ${result.total}/25 — cleanliness ${result.cleanlinessScore}/10${v10Tier === "T2" ? " — half size" : ""}`, "info").catch(() => {});
     logger.info({ userId, tradeId, dir: result.direction, score: result.total, pair }, "V10 trade opened");
   }
 

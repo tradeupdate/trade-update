@@ -21,6 +21,8 @@ export interface V10ScoreResult {
   rsi: number;
   rejectionReason: string | null;
   entryPrice: number;
+  /** T1 = high-conviction BB extreme (full size). T2 = BB approach (half size). */
+  tier?: "T1" | "T2";
 }
 
 interface RangeQualityResult {
@@ -334,7 +336,9 @@ export function scoreV10(
   const rsi = calcRSI(candles5m.map((c) => c.close), 14);
   const bb = calcBB(candles5m, 20, 2.0);
 
-  // Step 3: Try BUY
+  // ── Tier 1: BB extreme entries (full position size) ──────────────────────
+
+  // Step 3: Try T1 BUY
   const buyC2 = scoreV10Entry(candles5m, "BUY");
   if (buyC2 >= 3) {
     const buyC3 = scoreRejection(candles1m, "BUY");
@@ -346,7 +350,7 @@ export function scoreV10(
       const tpDist = Math.abs(tp - currentPrice);
       const rr = tpDist / stopDist;
       if (tpDist >= 5 && rr >= 0.8) {
-        logger.info(`V10 BUY signal: score=${buyTotal}/25 c1=${c1} c2=${buyC2} c3=${buyC3} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
+        logger.info(`V10 [T1] BUY: score=${buyTotal}/25 c1=${c1} c2=${buyC2} c3=${buyC3} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
         return {
           total: buyTotal, c1, c2: buyC2, c3: buyC3,
           direction: "BUY", atrValue, ready: true,
@@ -354,13 +358,13 @@ export function scoreV10(
           rangeLow: rangeQuality.rangeLow, midpoint: rangeQuality.midpoint,
           stopDistance: stopDist, takeProfit: tp, stopLoss: sl,
           trendRisk: false, adx: trendCheck.adx, rsi,
-          rejectionReason: null, entryPrice: currentPrice,
+          rejectionReason: null, entryPrice: currentPrice, tier: "T1",
         };
       }
     }
   }
 
-  // Step 4: Try SELL
+  // Step 4: Try T1 SELL
   const sellC2 = scoreV10Entry(candles5m, "SELL");
   if (sellC2 >= 3) {
     const sellC3 = scoreRejection(candles1m, "SELL");
@@ -372,7 +376,7 @@ export function scoreV10(
       const tpDist = Math.abs(currentPrice - tp);
       const rr = tpDist / stopDist;
       if (tpDist >= 5 && rr >= 0.8) {
-        logger.info(`V10 SELL signal: score=${sellTotal}/25 c1=${c1} c2=${sellC2} c3=${sellC3} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
+        logger.info(`V10 [T1] SELL: score=${sellTotal}/25 c1=${c1} c2=${sellC2} c3=${sellC3} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
         return {
           total: sellTotal, c1, c2: sellC2, c3: sellC3,
           direction: "SELL", atrValue, ready: true,
@@ -380,15 +384,74 @@ export function scoreV10(
           rangeLow: rangeQuality.rangeLow, midpoint: rangeQuality.midpoint,
           stopDistance: stopDist, takeProfit: tp, stopLoss: sl,
           trendRisk: false, adx: trendCheck.adx, rsi,
-          rejectionReason: null, entryPrice: currentPrice,
+          rejectionReason: null, entryPrice: currentPrice, tier: "T1",
         };
       }
     }
   }
 
-  // No qualifying setup
+  // ── Tier 2: Near-miss T1 entries (half position size) ────────────────────
+  // Same BB scoring as T1 but lower conviction bar (buyC2 >= 2, total >= 6).
+  // These are "almost T1" setups — price is at/near the band but hasn't fully
+  // confirmed. Win rate estimated 55–62%, break-even on V10 binary is 53.5%.
+
+  // At this point buyC2 + sellC2 are already computed from the T1 checks above.
+  // Compute C3 only if needed (when C2 >= 2 for that direction).
+
+  const hasT2BuyDir  = buyC2 >= 2 && buyC2 >= sellC2;
+  const hasT2SellDir = sellC2 >= 2 && sellC2 > buyC2;
+
+  if (hasT2BuyDir) {
+    const buyC3t2 = scoreRejection(candles1m, "BUY");
+    const t2Total = c1 + buyC2 + buyC3t2;
+    if (t2Total >= 6) {
+      const stopDist = Math.max(18, Math.min(55, atrValue * 0.9));
+      const sl = currentPrice - stopDist;
+      const tp = bb.middle;
+      const tpDist = Math.abs(tp - currentPrice);
+      const rr = tpDist / stopDist;
+      if (tpDist >= 5 && rr >= 0.6) {
+        logger.info(`V10 [T2] BUY: score=${t2Total}/25 c1=${c1} c2=${buyC2} c3=${buyC3t2} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
+        return {
+          total: t2Total, c1, c2: buyC2, c3: buyC3t2,
+          direction: "BUY", atrValue, ready: true,
+          cleanlinessScore: c1, rangeHigh: rangeQuality.rangeHigh,
+          rangeLow: rangeQuality.rangeLow, midpoint: rangeQuality.midpoint,
+          stopDistance: stopDist, takeProfit: tp, stopLoss: sl,
+          trendRisk: false, adx: trendCheck.adx, rsi,
+          rejectionReason: null, entryPrice: currentPrice, tier: "T2",
+        };
+      }
+    }
+  }
+
+  if (hasT2SellDir) {
+    const sellC3t2 = scoreRejection(candles1m, "SELL");
+    const t2Total = c1 + sellC2 + sellC3t2;
+    if (t2Total >= 6) {
+      const stopDist = Math.max(18, Math.min(55, atrValue * 0.9));
+      const sl = currentPrice + stopDist;
+      const tp = bb.middle;
+      const tpDist = Math.abs(currentPrice - tp);
+      const rr = tpDist / stopDist;
+      if (tpDist >= 5 && rr >= 0.6) {
+        logger.info(`V10 [T2] SELL: score=${t2Total}/25 c1=${c1} c2=${sellC2} c3=${sellC3t2} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
+        return {
+          total: t2Total, c1, c2: sellC2, c3: sellC3t2,
+          direction: "SELL", atrValue, ready: true,
+          cleanlinessScore: c1, rangeHigh: rangeQuality.rangeHigh,
+          rangeLow: rangeQuality.rangeLow, midpoint: rangeQuality.midpoint,
+          stopDistance: stopDist, takeProfit: tp, stopLoss: sl,
+          trendRisk: false, adx: trendCheck.adx, rsi,
+          rejectionReason: null, entryPrice: currentPrice, tier: "T2",
+        };
+      }
+    }
+  }
+
+  // No qualifying setup in either tier
   const bestC2 = Math.max(buyC2, sellC2);
-  const bestC3 = buyC2 >= sellC2 ? scoreRejection(candles1m, "BUY") : scoreRejection(candles1m, "SELL");
+  const bestC3 = scoreRejection(candles1m, buyC2 >= sellC2 ? "BUY" : "SELL");
   const bestTotal = c1 + bestC2 + bestC3;
   return {
     total: bestTotal, c1, c2: bestC2, c3: bestC3,
@@ -397,7 +460,7 @@ export function scoreV10(
     rangeLow: rangeQuality.rangeLow, midpoint: rangeQuality.midpoint,
     stopDistance: 0, takeProfit: 0, stopLoss: 0,
     trendRisk: false, adx: trendCheck.adx, rsi,
-    rejectionReason: `No qualifying setup (score ${bestTotal}/25, need 18)`,
+    rejectionReason: `No qualifying setup — best C2: ${Math.max(buyC2, sellC2)}/10`,
     entryPrice: currentPrice,
   };
 }
