@@ -130,14 +130,14 @@ export function calculateSessionMove(
     sessionOpenPrice, currentPrice,
     movePips: moveInPips.toFixed(2),
     moveDirection,
-    sufficient: moveInPips >= 350,
+    sufficient: moveInPips >= 220,
   }, "Reversal: session move calculation");
 
   return {
     sessionOpenPrice,
     currentMove: moveInPips,
     moveDirection,
-    sufficientMove: moveInPips >= 350,
+    sufficientMove: moveInPips >= 220,
   };
 }
 
@@ -281,6 +281,9 @@ function scoreSessionExhaustion(
   if (move >= 400) return 7;
   if (move >= 375) return 6;
   if (move >= 350) return 5;
+  if (move >= 300) return 4;
+  if (move >= 260) return 3;
+  if (move >= 220) return 2;
   return 0;
 }
 
@@ -352,7 +355,7 @@ export function scoreReversal(
       bbExtreme: detectBBExtreme(candles5m),
       confirmed1m: false, isPremium: false,
       entryPrice: 0, stopLoss: 0, takeProfit: 0, stopDistance: 0, rr: 0,
-      rejectionReason: `Insufficient session move: ${sessionMove.currentMove.toFixed(0)} pips (need 350)`,
+      rejectionReason: `Insufficient session move: ${sessionMove.currentMove.toFixed(0)} pips (need 220)`,
     };
   }
 
@@ -362,8 +365,9 @@ export function scoreReversal(
 
   logger.debug({ divergence5m, divergence15m }, "Reversal: divergence detection");
 
-  const buyReversal  = divergence5m.bullish  && divergence15m.bullish;
-  const sellReversal = divergence5m.bearish  && divergence15m.bearish;
+  // Moderate unlock: allow either 5m OR 15m divergence (not both required)
+  const buyReversal  = divergence5m.bullish  || divergence15m.bullish;
+  const sellReversal = divergence5m.bearish  || divergence15m.bearish;
 
   if (!buyReversal && !sellReversal) {
     const bbExtreme = detectBBExtreme(candles5m);
@@ -373,7 +377,7 @@ export function scoreReversal(
       sessionMove, divergence5m, divergence15m, bbExtreme,
       confirmed1m: false, isPremium: false,
       entryPrice: 0, stopLoss: 0, takeProfit: 0, stopDistance: 0, rr: 0,
-      rejectionReason: "No dual-timeframe divergence",
+      rejectionReason: "No divergence signal (neither 5m nor 15m)",
     };
   }
 

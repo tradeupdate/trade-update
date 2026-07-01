@@ -448,9 +448,9 @@ router.post("/backtest/run", async (req, res) => {
       result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000);
     } else if (strategy.type === "reversal") {
       const reversalConfig = {
-        scoreThreshold: Math.min(strategy.scoreThreshold ?? 10, 10),
+        scoreThreshold: strategy.scoreThreshold ?? 10,
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
-        maxTradesDay: strategy.maxTradesDay ?? 5,
+        maxTradesDay: strategy.maxTradesDay ?? 10,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
       };
       result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, 5000);

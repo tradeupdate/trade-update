@@ -211,8 +211,8 @@ export function detectV10TrendRisk(candles15m: Candle[]): TrendRiskResult {
   const last10 = candles15m.slice(-10);
   const bullish = last10.filter((c) => c.close > c.open).length;
   const bearish = 10 - bullish;
-  const strongDirectional = bullish >= 8 || bearish >= 8;
-  const trendRisk = adx > 30 || strongDirectional;
+  const strongDirectional = bullish >= 9 || bearish >= 9;
+  const trendRisk = adx > 38 || strongDirectional;
 
   logger.debug(
     `V10 trend risk: ADX=${adx.toFixed(1)} directional=${Math.max(bullish, bearish)}/10 trendRisk=${trendRisk}`
@@ -325,7 +325,7 @@ export function scoreV10(
       rangeHigh: rangeQuality.rangeHigh, rangeLow: rangeQuality.rangeLow, midpoint: rangeQuality.midpoint,
       stopDistance: 0, takeProfit: 0, stopLoss: 0,
       trendRisk: false, adx: trendCheck.adx, rsi: 50,
-      rejectionReason: `Range too noisy — cleanliness ${rangeQuality.cleanlinessScore}/10, need 6+`,
+      rejectionReason: `Range too noisy — cleanliness ${rangeQuality.cleanlinessScore}/10, need 4+`,
       entryPrice: currentPrice,
     };
   }

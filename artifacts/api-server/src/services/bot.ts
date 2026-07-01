@@ -310,7 +310,7 @@ class BotManager {
     const todayTradesRes = await db.select({ count: sql<number>`count(*)` }).from(tradesTable)
       .where(and(eq(tradesTable.userId, userId), gte(tradesTable.openedAt, todayTs)));
     state.todayTrades = Number(todayTradesRes[0]?.count || 0);
-    if (state.todayTrades >= (strategy.maxTradesDay || 6)) {
+    if (state.todayTrades >= (strategy.maxTradesDay || 10)) {
       state.pauseReason = "Daily trade limit reached";
       this.broadcastBotEvent(userId, state);
       return;
@@ -320,7 +320,7 @@ class BotManager {
     const hourTradesRes = await db.select({ count: sql<number>`count(*)` }).from(tradesTable)
       .where(and(eq(tradesTable.userId, userId), gte(tradesTable.openedAt, hourStart)));
     state.thisHourTrades = Number(hourTradesRes[0]?.count || 0);
-    if (state.thisHourTrades >= (strategy.maxTradesHour || 2)) {
+    if (state.thisHourTrades >= (strategy.maxTradesHour || 3)) {
       state.pauseReason = "Hourly limit reached";
       this.broadcastBotEvent(userId, state);
       return;
@@ -619,7 +619,7 @@ class BotManager {
       state.reversalCooldownUntil = null;
     }
 
-    const threshold = strategy.scoreThreshold ?? 20;
+    const threshold = strategy.scoreThreshold ?? 17;
     const result = scoreReversal(candles1m, candles5m, candles15m, threshold);
 
     if (!result) {
@@ -818,7 +818,7 @@ class BotManager {
     });
 
     const signalId = randomUUID();
-    const threshold = strategy.scoreThreshold ?? 18;
+    const threshold = strategy.scoreThreshold ?? 15;
     const action = result.direction !== "NONE" ? "executed" : "rejected";
     await db.insert(signalLogTable).values({
       id: signalId, userId, strategyId: strategy.id, timestamp: now,
@@ -1094,8 +1094,8 @@ class BotManager {
           // Set 30-minute cooldown after any reversal trade closes
           const state2 = this.bots.get(userId);
           if (state2) {
-            state2.reversalCooldownUntil = Math.floor(Date.now() / 1000) + 30 * 60;
-            this.logActivity(userId, "Reversal cooldown: 30 minutes until next entry", "info").catch(() => {});
+            state2.reversalCooldownUntil = Math.floor(Date.now() / 1000) + 15 * 60;
+            this.logActivity(userId, "Reversal cooldown: 15 minutes until next entry", "info").catch(() => {});
           }
         }
         continue;

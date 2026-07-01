@@ -20,8 +20,8 @@ const MIN_TP_PIPS   = 10;
 const MIN_RR        = 0.8;
 const SESSION_MOVE_THRESHOLD = 50;
 const TIME_STOP_BARS_5M = 4;  // 4 × 5m = 20 minutes
-const COOLDOWN_BARS_5M  = 6;  // 6 × 5m = 30 minutes
-const MAX_TRADES_DAY    = 5;
+const COOLDOWN_BARS_5M  = 3;  // 3 × 5m = 15 minutes (moderate unlock)
+const MAX_TRADES_DAY    = 10; // moderate unlock
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
