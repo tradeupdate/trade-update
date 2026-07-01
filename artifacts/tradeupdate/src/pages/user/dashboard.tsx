@@ -110,7 +110,6 @@ export default function Dashboard() {
   // Pair selection
   const [pairSwitching, setPairSwitching] = useState(false);
   const [pairSwitchMsg, setPairSwitchMsg] = useState<string | null>(null);
-  const activePair = (dashboardData?.user as any)?.activePair ?? "R_75";
 
   // Activity log history (fetched on first open)
   const [activityHistory, setActivityHistory] = useState<Array<{message: string; level: string; createdAt: number}>>([]);
@@ -216,6 +215,8 @@ export default function Dashboard() {
       refetchInterval: 15000,
     }
   });
+
+  const activePair = (dashboardData?.user as any)?.activePair ?? "R_75";
 
   // Populate bot settings form from fetched user data (runs after dashboardData is defined)
   useEffect(() => {
