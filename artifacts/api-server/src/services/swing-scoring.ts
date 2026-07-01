@@ -166,7 +166,7 @@ export function detectConsolidationRange(candles1h: Candle[]): ConsolidationRang
     c => c.high <= rangeHigh * 1.001 && c.low >= rangeLow * 0.999
   ).length;
 
-  const isConsolidating = rangePct < 1.5 && candlesInRange >= 12;
+  const isConsolidating = rangePct < 2.5 && candlesInRange >= 8;
   if (!isConsolidating) return null;
 
   return {
@@ -188,15 +188,13 @@ export function detectBreakout(candles1h: Candle[], range: ConsolidationRange): 
 
   const bullBreakout =
     lastCandle.close > range.high &&
-    lastCandle.open > range.high * 0.998 &&
     lastCandle.close > prevCandle.close &&
-    (lastCandle.high - lastCandle.low) > range.size * 0.3;
+    (lastCandle.high - lastCandle.low) > range.size * 0.15;
 
   const bearBreakout =
     lastCandle.close < range.low &&
-    lastCandle.open < range.low * 1.002 &&
     lastCandle.close < prevCandle.close &&
-    (lastCandle.high - lastCandle.low) > range.size * 0.3;
+    (lastCandle.high - lastCandle.low) > range.size * 0.15;
 
   if (bullBreakout) {
     return {
@@ -226,7 +224,7 @@ export function detectRetest(currentPrice: number, breakout: BreakoutResult, can
   const direction = breakout.direction;
   const distanceFromLevel = Math.abs(currentPrice - retestLevel);
   const distancePct = (distanceFromLevel / retestLevel) * 100;
-  const atRetestLevel = distancePct < 0.1;
+  const atRetestLevel = distancePct < 0.3;
 
   let rejectionConfirmed = false;
   if (atRetestLevel && candles15m.length >= 1) {

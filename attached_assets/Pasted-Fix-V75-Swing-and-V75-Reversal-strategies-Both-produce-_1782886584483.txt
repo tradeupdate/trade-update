@@ -1,0 +1,566 @@
+Fix V75 Swing and V75 Reversal strategies.
+Both produce 0 trades in backtest despite
+sufficient candle data being available.
+V75 Sniper works correctly on same data.
+Do not touch Sniper logic.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 1 — V75 SWING: INSUFFICIENT CANDLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Swing only got 161 candles vs Sniper's 4321.
+This means the swing backtest is fetching
+different data than Sniper.
+
+Root cause: Swing strategy has different
+granularity or count settings in the
+backtest data fetch.
+
+Fix the swing backtest data fetch:
+
+1. Swing strategy must fetch the SAME raw
+   candle data as Sniper — 5m candles,
+   same date range, same count.
+   
+   Both strategies must use:
+   granularity: 300 (5 minute candles)
+   count: 5000 (or date-range based fetch)
+   
+   Do NOT fetch different granularity for 
+   swing. Fetch 5m candles and build up:
+   5m → 1h (group 12 × 5m candles)
+   1h → 4h (group 4 × 1h candles)
+
+2. Fix the 1h candle builder:
+   function build1hFromFiveMin(
+     candles5m: Candle[]
+   ): Candle[] {
+     const grouped: {[key:number]: Candle[]} = {}
+     
+     candles5m.forEach(c => {
+       // Round down to nearest hour
+       const boundary = 
+         Math.floor(c.time / 3600) * 3600
+       if (!grouped[boundary]) 
+         grouped[boundary] = []
+       grouped[boundary].push(c)
+     })
+     
+     return Object.entries(grouped)
+       .filter(([_,g]) => g.length > 0)
+       .map(([boundary, group]) => {
+         const sorted = group.sort(
+           (a,b) => a.time - b.time
+         )
+         return {
+           time: parseInt(boundary),
+           open: sorted[0].open,
+           high: Math.max(...sorted.map(c=>c.high)),
+           low: Math.min(...sorted.map(c=>c.low)),
+           close: sorted[sorted.length-1].close
+         }
+       })
+       .sort((a,b) => a.time - b.time)
+   }
+
+3. Fix the 4h candle builder:
+   function build4hFromOneHour(
+     candles1h: Candle[]
+   ): Candle[] {
+     const grouped: {[key:number]: Candle[]} = {}
+     
+     candles1h.forEach(c => {
+       // Round down to nearest 4-hour boundary
+       const boundary = 
+         Math.floor(c.time / 14400) * 14400
+       if (!grouped[boundary]) 
+         grouped[boundary] = []
+       grouped[boundary].push(c)
+     })
+     
+     return Object.entries(grouped)
+       .filter(([_,g]) => g.length > 0)
+       .map(([boundary, group]) => {
+         const sorted = group.sort(
+           (a,b) => a.time - b.time
+         )
+         return {
+           time: parseInt(boundary),
+           open: sorted[0].open,
+           high: Math.max(...sorted.map(c=>c.high)),
+           low: Math.min(...sorted.map(c=>c.low)),
+           close: sorted[sorted.length-1].close
+         }
+       })
+       .sort((a,b) => a.time - b.time)
+   }
+
+4. Log candle counts after building:
+   console.log(`Swing candle arrays:
+     5m: ${candles5m.length}
+     1h: ${candles1h.length}
+     4h: ${candles4h.length}`)
+   
+   Expected with 4321 x 5m candles:
+   1h: approximately 360 candles
+   4h: approximately 90 candles
+   
+   If 4h < 10: log error and abort
+   "Insufficient 4h candles for swing 
+   strategy. Need 10+, got [X]"
+
+5. Fix minimum candle check in swing loop:
+   
+   Current (likely wrong):
+   if (i < 50) continue
+   
+   Replace with:
+   // Need at least 20 x 4h candles
+   // Each 4h = 48 x 5m candles
+   // So skip first 960 x 5m candles
+   const MIN_5M_FOR_SWING = 960
+   if (i < MIN_5M_FOR_SWING) {
+     if (i % 100 === 0) console.log(
+       `Swing warming up: ${i}/${MIN_5M_FOR_SWING}`
+     )
+     continue
+   }
+   
+   // Also check 4h array has enough data
+   const available4h = candles4h.filter(
+     c => c.time <= candle.time
+   )
+   if (available4h.length < 10) {
+     dataSkips++
+     continue
+   }
+
+6. Add consolidation detection debug logging:
+   After every consolidation check log result:
+   console.log(`Consolidation check at ${i}:
+     Range: ${rangeHigh - rangeLow} pips
+     Range%: ${rangePct.toFixed(3)}%
+     Candles in range: ${candlesInRange}/20
+     Result: ${isConsolidating ? 
+       'CONSOLIDATING' : 'NOT consolidating'}`)
+   
+   Log this for first 50 candle evaluations
+   to confirm consolidation detection is running
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 2 — V75 SWING: RELAX ENTRY CONDITIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Even with correct candle data, the swing
+conditions may be too strict for a backtest
+covering only 15 days (Jun 14-29).
+
+A consolidation + breakout + retest sequence
+on V75 over 15 days may occur only 3-8 times.
+The scoring might be blocking all of them.
+
+Relax conditions temporarily to confirm
+at least some trades execute:
+
+1. Reduce consolidation range requirement:
+   Old: rangePct < 1.5% AND candlesInRange >= 12
+   New: rangePct < 2.5% AND candlesInRange >= 8
+   
+   V75 has high natural volatility — 1.5% range
+   over 20 x 1h candles is extremely tight.
+   2.5% is more realistic for V75.
+
+2. Reduce breakout candle body requirement:
+   Old: bodyRatio > 0.3 AND 
+        candleRange > range.size * 0.3
+   New: bodyRatio > 0.2 AND
+        candleRange > range.size * 0.15
+   
+   Any decisive close beyond range counts.
+
+3. Reduce retest precision requirement:
+   Old: distancePct < 0.1 (within 0.1%)
+   New: distancePct < 0.3 (within 0.3%)
+   
+   V75 doesn't need to touch the exact level.
+   Coming within 0.3% of the retest level
+   is close enough for a swing trade.
+
+4. Reduce swing score threshold temporarily:
+   Old: 20/25
+   New: 16/25
+   
+   We need to see trades execute first.
+   Can tighten back up after confirming.
+
+5. Add "NO CONSOLIDATION FOUND" tracking:
+   Count how many times consolidation check
+   runs and fails:
+   
+   let consolidationChecks = 0
+   let consolidationFound = 0
+   let breakoutsDetected = 0
+   let retestsConfirmed = 0
+   let tradesExecuted = 0
+   
+   Log these at end of backtest:
+   console.log(`Swing backtest breakdown:
+     Consolidation checks: ${consolidationChecks}
+     Consolidations found: ${consolidationFound}
+     Breakouts detected: ${breakoutsDetected}
+     Retests confirmed: ${retestsConfirmed}
+     Trades executed: ${tradesExecuted}`)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 3 — V75 REVERSAL: SESSION MOVE BUG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Reversal has 4321 candles but zero trades.
+The session move calculator is almost
+certainly the blocker — it requires 350 pip
+move from session open before triggering.
+
+Bug investigation:
+
+1. Add debug logging to session move calculator:
+   console.log(`Session move check:
+     Current time: ${new Date(
+       currentTime * 1000).toISOString()}
+     UTC hour: ${utcHour}
+     Session open hour: ${sessionOpenHour}
+     Session open time: ${new Date(
+       sessionOpenUnix * 1000).toISOString()}
+     Session candles found: ${sessionCandles.length}
+     Session open price: ${sessionOpenPrice}
+     Current price: ${currentPrice}
+     Move in pips: ${moveInPips.toFixed(2)}
+     Sufficient (350+): ${moveInPips >= 350}`)
+   
+   Log this for first 20 evaluations to see
+   what values the calculator is producing.
+
+2. The 350 pip requirement may be wrong for
+   V75's BACKTEST candle price scale.
+   
+   V75 price is ~37,000-39,000 in backtest.
+   "Pips" on V75 in options trading = 
+   approximately 1 point = 1 pip.
+   
+   But 350 pips on a 38,000 price means
+   the market needs to move from 38,000 to
+   38,350 within one session — that's only
+   0.92% move.
+   
+   V75 moves 0.5-2% per session typically.
+   350 pips is actually achievable but
+   may not always be reached every session.
+   
+   TEMPORARILY reduce to 200 pips to see
+   if reversal trades start executing:
+   
+   Old: moveInPips >= 350
+   New: moveInPips >= 200
+   
+   Once trades execute we can evaluate
+   whether 350 is the right level.
+
+3. Fix the session open finder:
+   The current code finds "first candle of 
+   this session" but may be failing if
+   candles don't start exactly at session open.
+   
+   Replace with more robust version:
+   
+   function getSessionOpenPrice(
+     candles5m: Candle[],
+     currentTime: number
+   ): number {
+     const utcHour = new Date(
+       currentTime * 1000
+     ).getUTCHours()
+     
+     // Determine which session we're in
+     let sessionStartHour: number
+     if (utcHour >= 0 && utcHour < 7) 
+       sessionStartHour = 0
+     else if (utcHour >= 7 && utcHour < 12)
+       sessionStartHour = 7
+     else if (utcHour >= 12 && utcHour < 17)
+       sessionStartHour = 12
+     else
+       sessionStartHour = 17
+     
+     // Find session start time today UTC
+     const todayUTC = new Date(currentTime * 1000)
+     todayUTC.setUTCHours(sessionStartHour, 0, 0, 0)
+     const sessionStartUnix = 
+       todayUTC.getTime() / 1000
+     
+     // Find CLOSEST candle to session start
+     // (not necessarily exact match)
+     const sessionCandles = candles5m.filter(
+       c => c.time >= sessionStartUnix &&
+            c.time <= currentTime
+     )
+     
+     if (sessionCandles.length === 0) {
+       // Look back further if no candles found
+       const broadSearch = candles5m.filter(
+         c => c.time >= sessionStartUnix - 1800 &&
+              c.time <= currentTime
+       )
+       if (broadSearch.length === 0) return 0
+       return broadSearch[0].open
+     }
+     
+     return sessionCandles[0].open
+   }
+
+4. Add reversal-specific debug counters:
+   
+   let sessionMoveChecks = 0
+   let sessionMovePassed = 0
+   let divergenceChecks = 0
+   let divergencePassed = 0
+   let bbExtremeChecks = 0
+   let bbExtremePassed = 0
+   let confirmationChecks = 0
+   let confirmationPassed = 0
+   let reversalTrades = 0
+   
+   Log at end:
+   console.log(`Reversal funnel:
+     Session move checks: ${sessionMoveChecks}
+     Session move passed: ${sessionMovePassed}
+     Divergence checks: ${divergenceChecks}
+     Divergence passed: ${divergencePassed}
+     BB extreme checks: ${bbExtremeChecks}
+     BB extreme passed: ${bbExtremePassed}
+     Confirmation checks: ${confirmationChecks}
+     Confirmation passed: ${confirmationPassed}
+     Trades executed: ${reversalTrades}`)
+   
+   This funnel shows exactly which condition
+   is blocking every single reversal trade.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 4 — V75 REVERSAL: DIVERGENCE DETECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The divergence detector requires BOTH 5m
+AND 15m to show divergence simultaneously.
+This double requirement may be too strict
+for a 15-day backtest window.
+
+1. Add divergence debug logging:
+   console.log(`Divergence check at ${
+     new Date(candle.time*1000).toISOString()}:
+     5m bullish: ${div5m.bullish}
+     5m bearish: ${div5m.bearish}
+     5m RSI: ${div5m.currentRsi.toFixed(1)}
+     15m bullish: ${div15m.bullish}
+     15m bearish: ${div15m.bearish}
+     15m RSI: ${div15m.currentRsi.toFixed(1)}`)
+   
+   Log first 30 divergence checks to see
+   if divergence is being detected at all.
+
+2. Fix RSI array calculation:
+   The divergence detector needs RSI for
+   each candle, not just current RSI.
+   
+   Add this function if missing:
+   function calculateRSIArray(
+     candles: Candle[], 
+     period: number = 14
+   ): number[] {
+     const closes = candles.map(c => c.close)
+     const rsiValues: number[] = 
+       new Array(period).fill(50)
+     
+     let avgGain = 0
+     let avgLoss = 0
+     
+     for (let i = 1; i <= period; i++) {
+       const diff = closes[i] - closes[i-1]
+       if (diff > 0) avgGain += diff
+       else avgLoss += Math.abs(diff)
+     }
+     avgGain /= period
+     avgLoss /= period
+     
+     for (let i = period; i < closes.length; i++) {
+       const diff = closes[i] - closes[i-1]
+       avgGain = (avgGain * (period-1) + 
+         Math.max(0, diff)) / period
+       avgLoss = (avgLoss * (period-1) + 
+         Math.max(0, -diff)) / period
+       
+       if (avgLoss === 0) rsiValues.push(100)
+       else {
+         const rs = avgGain / avgLoss
+         rsiValues.push(100 - (100 / (1 + rs)))
+       }
+     }
+     
+     return rsiValues
+   }
+
+3. Relax divergence requirement temporarily:
+   Old: BOTH 5m AND 15m divergence required
+   New: EITHER 5m OR 15m divergence required
+        PLUS RSI must be at extreme:
+        RSI < 30 for bullish or > 70 for bearish
+   
+   This is the temporary version to confirm
+   the strategy can find trades. Once we see
+   trades we can tighten back to both TFs.
+   
+   const hasDivergence = 
+     (div5m.bullish || div15m.bullish) &&
+     div5m.currentRsi < 30
+   // For buy reversal
+   
+   const hasBearDivergence =
+     (div5m.bearish || div15m.bearish) &&
+     div5m.currentRsi > 70
+   // For sell reversal
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 5 — DATA MISMATCH WARNING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Both Reversal and Sniper show "Data mismatch
+vs other runs" warning despite both having
+4321 candles.
+
+This means two runs of the same strategy
+on the same date range produced different
+candle hashes, suggesting the cache is not
+being used consistently.
+
+Fix the cache lookup:
+
+1. Check if cache file naming is consistent:
+   Cache key must be EXACTLY the same every
+   run for the same parameters.
+   
+   Current (likely wrong):
+   `${symbol}_${granularity}m_${dateFrom}_${dateTo}`
+   
+   Problem: dateFrom and dateTo might be
+   calculated differently each run due to
+   timezone or rounding differences.
+   
+   Fix by normalizing dates to midnight UTC:
+   function normalizeDateToMidnightUTC(
+     dateString: string
+   ): number {
+     const d = new Date(dateString)
+     d.setUTCHours(0, 0, 0, 0)
+     return Math.floor(d.getTime() / 1000)
+   }
+   
+   const normalizedFrom = 
+     normalizeDateToMidnightUTC(dateFrom)
+   const normalizedTo = 
+     normalizeDateToMidnightUTC(dateTo)
+   
+   const cacheKey = 
+     `${symbol}_5m_${normalizedFrom}_${normalizedTo}`
+   
+   Always use this normalized key for both
+   reading and writing cache.
+
+2. Share candle cache across strategies:
+   Sniper and Reversal both use R_75 5m candles
+   for the same date range. They should use
+   the EXACT SAME cached file.
+   
+   Current: each strategy probably creates
+   its own cache file with slightly different
+   keys or parameters.
+   
+   Fix: create ONE shared cache file per
+   symbol + date range regardless of strategy.
+   Strategy selection happens AFTER data loading,
+   not before or during.
+   
+   const SHARED_CACHE_KEY = 
+     `R_75_5m_${normalizedFrom}_${normalizedTo}`
+   
+   All strategies running on R_75 for the same
+   date range load from this single cache file.
+
+3. Verify hash is calculated same way:
+   The hash should be:
+   `${candles.length}:${sum of all closes}`
+   
+   Make sure this is calculated AFTER
+   normalizing and sorting candles,
+   not before. The same raw data sorted
+   differently produces different sums.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 6 — RERUN BACKTESTS AFTER FIXES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After all fixes applied:
+
+Step 1: Clear all cached data
+Delete all files in /server/data/candle-cache/
+Start fresh.
+
+Step 2: Run V75 Sniper backtest first
+Jun 14 - Jun 29
+Confirm it still gets 4321 candles
+Confirm WR is still around 54%
+This is the baseline control.
+
+Step 3: Run V75 Swing backtest
+Jun 14 - Jun 29
+Confirm it gets 4321 candles (not 161)
+Confirm 1h array has ~360 candles
+Confirm 4h array has ~90 candles
+Expect 3-10 trades over 15 days
+
+Step 4: Run V75 Reversal backtest
+Jun 14 - Jun 29
+Confirm 4321 candles
+Watch the funnel log to see where
+trades are passing or failing
+Expect 5-20 trades over 15 days
+
+Step 5: For each strategy that still
+shows 0 trades, check the funnel log
+and report what it shows.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SWING:
+☐ Fetches 4321 candles (same as Sniper)
+☐ Builds 1h candles (~360 count)
+☐ Builds 4h candles (~90 count)
+☐ Consolidation detection logs appear
+☐ Funnel breakdown log shows at backtest end
+☐ At least 3 trades execute
+☐ All prices in 37,000-39,000 range
+☐ No data mismatch warning
+
+REVERSAL:
+☐ Fetches 4321 candles (same as Sniper)
+☐ Session move calculator logs appear
+☐ Divergence check logs appear
+☐ Funnel breakdown log shows at backtest end
+☐ At least 5 trades execute
+☐ RSI values in 0-100 range in logs
+☐ No data mismatch warning
+
+BOTH:
+☐ Data mismatch warning gone
+☐ Cache file shared between strategies
+  for same date range
+☐ Hash consistent across multiple runs
+☐ Sniper still works correctly at ~54% WR

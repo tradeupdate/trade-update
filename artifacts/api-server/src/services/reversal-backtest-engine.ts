@@ -18,7 +18,7 @@ const MIN_STOP_PIPS = 20;
 const MAX_STOP_PIPS = 80;
 const MIN_TP_PIPS   = 30;
 const MIN_RR        = 1.5;
-const SESSION_MOVE_THRESHOLD = 350;
+const SESSION_MOVE_THRESHOLD = 200;
 const TIME_STOP_BARS_5M = 4;  // 4 × 5m = 20 minutes
 const COOLDOWN_BARS_5M  = 6;  // 6 × 5m = 30 minutes
 const MAX_TRADES_DAY    = 5;
@@ -112,8 +112,14 @@ export interface ReversalBacktestResult {
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
+function normalizeMidnightUTC(unix: number): number {
+  const d = new Date(unix * 1000);
+  d.setUTCHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
 function getCacheKey(dateFrom: number, dateTo: number): string {
-  return `${SYMBOL}_5m_${dateFrom}_${dateTo}`;
+  return `${SYMBOL}_5m_${normalizeMidnightUTC(dateFrom)}_${normalizeMidnightUTC(dateTo)}`;
 }
 function getCachePath(key: string): string {
   return path.join(CACHE_DIR, `${key}.json`);
@@ -414,6 +420,8 @@ export async function runReversalBacktest(
     stopTooWide: 0, stopTooTight: 0, tpTooClose: 0, rrTooLow: 0,
     belowThreshold: 0, cooldown: 0, dailyLimit: 0, consLossBlocked: 0,
   };
+  let sessionMoveDebugLogs = 0;
+  let divergenceDebugLogs = 0;
 
   // ── Main loop ─────────────────────────────────────────────────────────────
   for (let i = WARMUP; i < candles5m.length; i++) {
@@ -527,15 +535,25 @@ export async function runReversalBacktest(
     const window15m = all15m.filter(c => c.time <= candle.time).slice(-30);
     if (window5m.length < 30 || window15m.length < 14) continue;
 
-    // ── Session move ──────────────────────────────────────────────────────
-    const { movePips, moveDir } = calcSessionMoveBT(window5m, candle.time);
+    // ── Session move — use full 5m slice so session open is always reachable ──
+    const candles5mUpToNow = candles5m.slice(0, i + 1);
+    const { movePips, moveDir } = calcSessionMoveBT(candles5mUpToNow, candle.time);
+    if (sessionMoveDebugLogs < 20) {
+      const utcHour = new Date(candle.time * 1000).getUTCHours();
+      console.log(`[REV-DBG] SessionMove i=${i} utcH=${utcHour} move=${movePips.toFixed(1)}pip dir=${moveDir} threshold=${SESSION_MOVE_THRESHOLD} passed=${movePips >= SESSION_MOVE_THRESHOLD}`);
+      sessionMoveDebugLogs++;
+    }
     if (movePips < SESSION_MOVE_THRESHOLD) { rej.insufficientMove++; continue; }
 
-    // ── Divergence ────────────────────────────────────────────────────────
+    // ── Divergence — EITHER 5m OR 15m + RSI at extreme ───────────────────
     const div5m  = detectDivergenceBT(window5m, 10);
     const div15m = detectDivergenceBT(window15m, 10);
-    const buyRev  = div5m.bullish  && div15m.bullish;
-    const sellRev = div5m.bearish  && div15m.bearish;
+    if (divergenceDebugLogs < 30) {
+      console.log(`[REV-DBG] Div i=${i} 5m.bull=${div5m.bullish} 5m.bear=${div5m.bearish} 5m.rsi=${div5m.currentRsi.toFixed(1)} 15m.bull=${div15m.bullish} 15m.bear=${div15m.bearish}`);
+      divergenceDebugLogs++;
+    }
+    const buyRev  = (div5m.bullish || div15m.bullish) && div5m.currentRsi < 30;
+    const sellRev = (div5m.bearish || div15m.bearish) && div5m.currentRsi > 70;
     if (!buyRev && !sellRev) { rej.noDivergence++; continue; }
     const direction: "BUY" | "SELL" = buyRev ? "BUY" : "SELL";
     const isBuy = direction === "BUY";

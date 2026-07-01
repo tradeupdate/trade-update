@@ -114,8 +114,14 @@ export interface SwingBacktestResult {
 
 // ── Cache helpers (same format as sniper engine) ───────────────────────────────
 
+function normalizeMidnightUTC(unix: number): number {
+  const d = new Date(unix * 1000);
+  d.setUTCHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
 function getCacheKey(dateFrom: number, dateTo: number): string {
-  return `${SYMBOL}_5m_${dateFrom}_${dateTo}`;
+  return `${SYMBOL}_5m_${normalizeMidnightUTC(dateFrom)}_${normalizeMidnightUTC(dateTo)}`;
 }
 function getCachePath(key: string): string {
   return path.join(CACHE_DIR, `${key}.json`);
@@ -304,7 +310,7 @@ export async function runSwingBacktest(
     throw new Error(`Not enough 1h candles for warmup. Have ${all1h.length}, need ${WARMUP_1H}`);
   }
 
-  const threshold = config.scoreThreshold ?? 20;
+  const threshold = config.scoreThreshold ?? 16;
   const maxRisk = (config.maxRiskPercent ?? 1.0) / 100;
 
   console.log(`\n=== SWING BACKTEST STARTING ===`);
@@ -330,6 +336,9 @@ export async function runSwingBacktest(
 
   let scoreNullCount = 0, belowThreshold = 0, dirNone = 0, noBreakout = 0;
   let sessionFiltered = 0, stopTooWide = 0, consLossBlocked = 0, dailyLimitBlocked = 0;
+  let consolidationChecks = 0, consolidationFound = 0, breakoutsDetected = 0;
+  let retestsConfirmed = 0, tradesExecuted = 0;
+  let debugConsolidationLogs = 0;
 
   // ── Main loop on 1h candles ───────────────────────────────────────────────
   for (let i = WARMUP_1H; i < all1h.length; i++) {
@@ -513,9 +522,22 @@ export async function runSwingBacktest(
     // ── Detect consolidation if no breakout pending ────────────────────────
     if (!breakout) {
       if (!consolidation) {
+        consolidationChecks++;
         const newConsolidation = detectConsolidationRange(candles1hSlice);
+        if (debugConsolidationLogs < 50) {
+          const last20 = candles1hSlice.slice(-20);
+          if (last20.length >= 20) {
+            const rH = Math.max(...last20.map(c => c.high));
+            const rL = Math.min(...last20.map(c => c.low));
+            const rPct = ((rH - rL) / ((rH + rL) / 2)) * 100;
+            const cInRange = last20.filter(c => c.high <= rH * 1.001 && c.low >= rL * 0.999).length;
+            console.log(`[SW-DBG] Consol check i=${i}: range=${rPct.toFixed(3)}% candlesInRange=${cInRange}/20 result=${newConsolidation ? "CONSOLIDATING" : "NOT"}`);
+          }
+          debugConsolidationLogs++;
+        }
         if (newConsolidation) {
           consolidation = newConsolidation;
+          consolidationFound++;
           console.log(`[SW] Consolidation i=${i} high=${consolidation.high.toFixed(2)} low=${consolidation.low.toFixed(2)} size=${consolidation.size.toFixed(0)}pip`);
         }
       } else {
@@ -524,6 +546,7 @@ export async function runSwingBacktest(
         if (newBreakout) {
           breakout = newBreakout;
           breakoutInvalidatedAt = 0;
+          breakoutsDetected++;
           console.log(`[SW] Breakout i=${i} dir=${breakout.direction} at ${breakout.breakoutPrice.toFixed(2)} retestLevel=${breakout.retestLevel.toFixed(2)}`);
         } else {
           // Check if consolidation has been invalidated by extreme range expansion
@@ -570,6 +593,7 @@ export async function runSwingBacktest(
       // Check retest
       const retest = detectRetest(candle1h.close, breakout, candles15mSlice.slice(-3));
       if (!retest.readyToEnter) { noBreakout++; continue; }
+      retestsConfirmed++;
 
       // Calculate stop
       const stopDist = isBuy
@@ -630,6 +654,7 @@ export async function runSwingBacktest(
       consolidation = null;
       breakoutInvalidatedAt = 0;
 
+      tradesExecuted++;
       console.log(`[SW] STAGE 1 ENTRY i=${i} dir=${openTrade.direction} score=${total}(${t1.pts}/${t2.pts}/${c3}) price=${entryPrice.toFixed(2)} sl=${slPrice.toFixed(2)} tp1=${tp1Price.toFixed(2)} tp2=${tp2Price.toFixed(2)} stake=${stake1.toFixed(2)}`);
     }
   }
@@ -647,6 +672,12 @@ export async function runSwingBacktest(
   console.log(`1h candles processed: ${all1h.length - WARMUP_1H}  Trades: ${tradeList.length}`);
   console.log(`scoreNull=${scoreNullCount} belowThreshold=${belowThreshold} dirNone=${dirNone} noBreakout=${noBreakout} stopTooWide=${stopTooWide}`);
   console.log(`sessionFiltered=${sessionFiltered} consLoss=${consLossBlocked} dailyLimit=${dailyLimitBlocked}`);
+  console.log(`Swing backtest breakdown:
+    Consolidation checks: ${consolidationChecks}
+    Consolidations found: ${consolidationFound}
+    Breakouts detected: ${breakoutsDetected}
+    Retests confirmed: ${retestsConfirmed}
+    Trades executed: ${tradesExecuted}`);
   console.log(`Partial exits: tp1=${partialStats.tp1Hits} tp2=${partialStats.tp2Hits} be=${partialStats.beHits} stage2=${partialStats.stage2Hits}`);
 
   const wins = tradeList.filter(t => t.pnl > 0).length;
@@ -672,7 +703,7 @@ export async function runSwingBacktest(
     worstTrade: Math.round(worstTrade * 100) / 100,
     avgDurationMinutes,
     sharpeRatio: Math.round(calcSharpe(returns) * 100) / 100,
-    candlesUsed: all1h.length - WARMUP_1H,
+    candlesUsed: candles5m.length,
     candleHash,
     dataSource,
     cacheFile,
