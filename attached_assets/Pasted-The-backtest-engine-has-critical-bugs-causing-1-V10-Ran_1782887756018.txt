@@ -1,0 +1,809 @@
+The backtest engine has critical bugs causing:
+1. V10 Range Scalper: trades executing but all 
+   losing (-$339, 0% WR)
+2. V75 Swing: zero trades despite 5761 candles
+3. Data mismatch warnings persisting
+
+Fix all three issues completely.
+Add forced diagnostic output so we can see
+exactly what the engine is doing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL FIX 1 — V10 P&L BUG ($-339)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+V10 shows -$339 with 0% WR. This means trades
+are executing but ALL are recorded as losses.
+This is mathematically impossible with real
+market data unless the P&L calculation is wrong.
+
+Possible causes:
+A. Payout rate returning 0 or negative
+B. Stop and TP on same side as entry
+C. Time stop closing everything immediately
+D. Win condition check inverted
+
+Fix all possible causes:
+
+1. REMOVE live payout rate detection for now.
+   It is causing -$339 bug.
+   Replace with fixed rate:
+   
+   const PAYOUT_RATE = 0.87
+   // Use 87% as conservative estimate for V10
+   // Remove all getActualPayoutRate() calls
+   // in the V10 backtest engine
+   
+   Remove this entire function from V10 backtest:
+   async function getActualPayoutRate(...)
+   
+   Replace every use of payoutRate with 0.87
+
+2. Add P&L calculation validation:
+   
+   function calculateV10PnL(
+     outcome: string,
+     stake: number,
+     direction: string,
+     entryPrice: number,
+     closePrice: number
+   ): number {
+   
+     console.log(`P&L CALC:
+       Outcome: ${outcome}
+       Stake: $${stake}
+       Direction: ${direction}
+       Entry: ${entryPrice}
+       Close: ${closePrice}
+       Price moved: ${direction === 'BUY' ? 
+         closePrice - entryPrice : 
+         entryPrice - closePrice} pips`)
+   
+     if (outcome === 'TP_HIT') {
+       const pnl = stake * 0.87
+       console.log(`WIN: +$${pnl}`)
+       return pnl
+     }
+     
+     if (outcome === 'STOP_LOSS') {
+       const pnl = -(stake)
+       console.log(`LOSS: $${pnl}`)
+       return pnl
+     }
+     
+     if (outcome === 'TIME_STOP') {
+       if (direction === 'BUY') {
+         const profitable = closePrice > entryPrice
+         const pnl = profitable ? 
+           stake * 0.87 * 0.5 : -(stake * 0.5)
+         console.log(`TIME STOP ${
+           profitable ? 'WIN' : 'LOSS'}: $${pnl}`)
+         return pnl
+       } else {
+         const profitable = closePrice < entryPrice
+         const pnl = profitable ?
+           stake * 0.87 * 0.5 : -(stake * 0.5)
+         console.log(`TIME STOP ${
+           profitable ? 'WIN' : 'LOSS'}: $${pnl}`)
+         return pnl
+       }
+     }
+     
+     return 0
+   }
+
+3. Fix V10 stop and TP validation:
+   
+   After calculating stop and TP log them:
+   
+   console.log(`V10 TRADE LEVELS:
+     Direction: ${direction}
+     Entry: ${entryPrice}
+     Stop Loss: ${stopLoss}
+     Take Profit: ${takeProfit}
+     Stop is BELOW entry (BUY check): ${
+       direction === 'BUY' ? 
+       stopLoss < entryPrice : 'N/A'}
+     Stop is ABOVE entry (SELL check): ${
+       direction === 'SELL' ? 
+       stopLoss > entryPrice : 'N/A'}
+     TP is ABOVE entry (BUY check): ${
+       direction === 'BUY' ? 
+       takeProfit > entryPrice : 'N/A'}
+     TP is BELOW entry (SELL check): ${
+       direction === 'SELL' ? 
+       takeProfit < entryPrice : 'N/A'}`)
+   
+   Add hard validation:
+   if (direction === 'BUY') {
+     if (stopLoss >= entryPrice) {
+       console.error('BUG: BUY stop above entry!')
+       stopLoss = entryPrice - (atr * 0.8)
+     }
+     if (takeProfit <= entryPrice) {
+       console.error('BUG: BUY TP below entry!')
+       takeProfit = bb.middle
+       if (takeProfit <= entryPrice) {
+         takeProfit = entryPrice + (atr * 1.0)
+       }
+     }
+   }
+   if (direction === 'SELL') {
+     if (stopLoss <= entryPrice) {
+       console.error('BUG: SELL stop below entry!')
+       stopLoss = entryPrice + (atr * 0.8)
+     }
+     if (takeProfit >= entryPrice) {
+       console.error('BUG: SELL TP above entry!')
+       takeProfit = bb.middle
+       if (takeProfit >= entryPrice) {
+         takeProfit = entryPrice - (atr * 1.0)
+       }
+     }
+   }
+
+4. Fix V10 trade outcome checker:
+   
+   V10 uses middle BB as take profit target.
+   The outcome check must correctly detect
+   when price reaches middle BB.
+   
+   function checkV10Outcome(
+     trade: OpenTrade,
+     candle: Candle
+   ): string | null {
+   
+     const { direction, stopLoss, 
+             takeProfit, entryPrice } = trade
+     
+     if (direction === 'BUY') {
+       // Stop is BELOW — hit when low touches it
+       if (candle.low <= stopLoss) {
+         console.log(`BUY STOP HIT: 
+           low=${candle.low} <= stop=${stopLoss}`)
+         return 'STOP_LOSS'
+       }
+       // TP is ABOVE — hit when high reaches it
+       if (candle.high >= takeProfit) {
+         console.log(`BUY TP HIT: 
+           high=${candle.high} >= tp=${takeProfit}`)
+         return 'TP_HIT'
+       }
+     }
+     
+     if (direction === 'SELL') {
+       // Stop is ABOVE — hit when high touches it
+       if (candle.high >= stopLoss) {
+         console.log(`SELL STOP HIT: 
+           high=${candle.high} >= stop=${stopLoss}`)
+         return 'STOP_LOSS'
+       }
+       // TP is BELOW — hit when low reaches it
+       if (candle.low <= takeProfit) {
+         console.log(`SELL TP HIT: 
+           low=${candle.low} <= tp=${takeProfit}`)
+         return 'TP_HIT'
+       }
+     }
+     
+     return null // Still open
+   }
+
+5. Fix V10 win rate calculation:
+   A trade is a WIN when pnl > 0
+   A trade is a LOSS when pnl <= 0
+   
+   winRate = wins / total * 100
+   
+   Make sure this runs AFTER all trades complete:
+   const wins = allTrades.filter(
+     t => t.pnl > 0
+   ).length
+   const total = allTrades.length
+   const winRate = total > 0 ? 
+     (wins / total * 100) : 0
+   
+   console.log(`V10 Final Results:
+     Total trades: ${total}
+     Wins: ${wins}
+     Losses: ${total - wins}
+     Win rate: ${winRate.toFixed(1)}%
+     Total P&L: $${allTrades.reduce(
+       (s,t) => s + t.pnl, 0
+     ).toFixed(2)}`)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL FIX 2 — V75 SWING ZERO TRADES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5761 candles is sufficient but 0 trades means
+the swing entry logic is blocking everything.
+
+COMPLETELY REPLACE the swing entry logic
+with a simpler version that will definitely
+produce trades, then we can refine it:
+
+Replace the existing swing backtest engine
+with this simplified but correct version:
+
+function runSwingBacktestSimplified(
+  candles5m: Candle[],
+  strategy: Strategy
+): BacktestResult {
+
+  console.log(`=== SWING BACKTEST START ===`)
+  console.log(`Candles: ${candles5m.length}`)
+  
+  // Build higher timeframes
+  const candles1h = build1hFromFiveMin(candles5m)
+  const candles4h = build4hFromOneHour(candles1h)
+  
+  console.log(`1h: ${candles1h.length}`)
+  console.log(`4h: ${candles4h.length}`)
+  
+  const state = {
+    balance: 5000,
+    openTrade: null as any,
+    allTrades: [] as any[],
+    todayTrades: 0,
+    currentDay: '',
+    consecutiveLosses: 0
+  }
+
+  // Start from index 50 to have indicator history
+  for (let i = 50; i < candles5m.length; i++) {
+    const candle = candles5m[i]
+    
+    // Daily reset
+    const day = new Date(
+      candle.time * 1000
+    ).toISOString().slice(0, 10)
+    
+    if (day !== state.currentDay) {
+      state.currentDay = day
+      state.todayTrades = 0
+    }
+
+    // Check open trade first
+    if (state.openTrade) {
+      const outcome = checkSwingOutcome(
+        state.openTrade, candle
+      )
+      
+      if (outcome) {
+        closeSwingTrade(
+          state, outcome, candle
+        )
+        continue
+      }
+      
+      // Check time stop (6 hours = 72 x 5m)
+      const candlesOpen = i - state.openTrade.openIdx
+      if (candlesOpen >= 72) {
+        closeSwingTrade(
+          state, 'TIME_STOP', candle
+        )
+        continue
+      }
+      
+      continue // Wait for trade to close
+    }
+
+    // Skip if limits hit
+    if (state.todayTrades >= 3) continue
+    if (state.consecutiveLosses >= 2) continue
+
+    // Get available candles up to this point
+    const avail5m = candles5m.slice(
+      Math.max(0, i - 200), i + 1
+    )
+    const avail1h = candles1h.filter(
+      c => c.time <= candle.time
+    ).slice(-50)
+    const avail4h = candles4h.filter(
+      c => c.time <= candle.time
+    ).slice(-20)
+
+    // Need minimum data
+    if (avail4h.length < 5) continue
+    if (avail1h.length < 10) continue
+
+    // SIMPLIFIED SWING SIGNAL:
+    // 4h trend + 1h confirmation + 5m entry
+    
+    const signal = getSimpleSwingSignal(
+      avail5m, avail1h, avail4h, candle, i
+    )
+
+    if (signal !== 'NONE') {
+      executeSwingTrade(
+        state, signal, candle, i
+      )
+    }
+  }
+
+  return calculateSwingResults(state)
+}
+
+function getSimpleSwingSignal(
+  candles5m: Candle[],
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candle: Candle,
+  idx: number
+): string {
+
+  const closes4h = candles4h.map(c => c.close)
+  const closes1h = candles1h.map(c => c.close)
+  const closes5m = candles5m.map(c => c.close)
+
+  // 4H TREND
+  const ema20_4h = calculateEMA(closes4h, 
+    Math.min(20, closes4h.length))
+  const ema50_4h = calculateEMA(closes4h,
+    Math.min(50, closes4h.length))
+  const price = candle.close
+
+  const bull4h = ema20_4h > ema50_4h
+  const bear4h = ema20_4h < ema50_4h
+
+  // 1H MOMENTUM
+  const ema9_1h = calculateEMA(closes1h,
+    Math.min(9, closes1h.length))
+  const ema21_1h = calculateEMA(closes1h,
+    Math.min(21, closes1h.length))
+  const rsi1h = calculateRSI(candles1h, 14)
+
+  const bull1h = ema9_1h > ema21_1h
+  const bear1h = ema9_1h < ema21_1h
+
+  // 5M PULLBACK ENTRY
+  const ema21_5m = calculateEMA(closes5m,
+    Math.min(21, closes5m.length))
+  const rsi5m = calculateRSI(candles5m, 14)
+
+  const nearEMA = Math.abs(price - ema21_5m) / 
+    ema21_5m < 0.005 // Within 0.5%
+
+  // LOG EVERY 500 CANDLES
+  if (idx % 500 === 0) {
+    console.log(`Swing eval at ${idx}:
+      Price: ${price}
+      4h: EMA20=${ema20_4h?.toFixed(0)} 
+          EMA50=${ema50_4h?.toFixed(0)}
+          Bull=${bull4h} Bear=${bear4h}
+      1h: EMA9=${ema9_1h?.toFixed(0)}
+          EMA21=${ema21_1h?.toFixed(0)}
+          Bull=${bull1h} Bear=${bear1h}
+      5m: EMA21=${ema21_5m?.toFixed(0)}
+          RSI=${rsi5m?.toFixed(1)}
+          NearEMA=${nearEMA}`)
+  }
+
+  // BUY SIGNAL
+  if (bull4h && bull1h && nearEMA && 
+      rsi5m > 30 && rsi5m < 55) {
+    console.log(`SWING BUY SIGNAL at ${
+      new Date(candle.time*1000).toISOString()}
+      Price: ${price}
+      EMA21_5m: ${ema21_5m}`)
+    return 'BUY'
+  }
+
+  // SELL SIGNAL  
+  if (bear4h && bear1h && nearEMA &&
+      rsi5m > 45 && rsi5m < 70) {
+    console.log(`SWING SELL SIGNAL at ${
+      new Date(candle.time*1000).toISOString()}
+      Price: ${price}
+      EMA21_5m: ${ema21_5m}`)
+    return 'SELL'
+  }
+
+  return 'NONE'
+}
+
+function executeSwingTrade(
+  state: any,
+  direction: string,
+  candle: Candle,
+  idx: number
+): void {
+
+  const entryPrice = candle.close
+  const atr = 100 // Default ATR if calc fails
+  const stopDistance = Math.max(80, atr * 2)
+
+  let stopLoss: number
+  let takeProfit: number
+
+  if (direction === 'BUY') {
+    stopLoss = entryPrice - stopDistance
+    takeProfit = entryPrice + (stopDistance * 2.0)
+  } else {
+    stopLoss = entryPrice + stopDistance
+    takeProfit = entryPrice - (stopDistance * 2.0)
+  }
+
+  const stake = Math.max(
+    1, Math.min(50, state.balance * 0.01)
+  )
+
+  state.openTrade = {
+    direction,
+    entryPrice,
+    stopLoss,
+    takeProfit,
+    stake,
+    openIdx: idx,
+    openTime: candle.time
+  }
+
+  state.todayTrades++
+
+  console.log(`>>> SWING TRADE OPENED:
+    Direction: ${direction}
+    Entry: ${entryPrice}
+    Stop: ${stopLoss}
+    TP: ${takeProfit}
+    Stake: $${stake}
+    Balance: $${state.balance}`)
+}
+
+function checkSwingOutcome(
+  trade: any,
+  candle: Candle
+): string | null {
+
+  if (trade.direction === 'BUY') {
+    if (candle.low <= trade.stopLoss) 
+      return 'STOP_LOSS'
+    if (candle.high >= trade.takeProfit) 
+      return 'TP_HIT'
+  } else {
+    if (candle.high >= trade.stopLoss) 
+      return 'STOP_LOSS'
+    if (candle.low <= trade.takeProfit) 
+      return 'TP_HIT'
+  }
+  return null
+}
+
+function closeSwingTrade(
+  state: any,
+  outcome: string,
+  candle: Candle
+): void {
+
+  const trade = state.openTrade
+  let pnl: number
+  let closePrice: number
+
+  if (outcome === 'TP_HIT') {
+    closePrice = trade.takeProfit
+    pnl = trade.stake * 0.85
+  } else if (outcome === 'STOP_LOSS') {
+    closePrice = trade.stopLoss
+    pnl = -(trade.stake)
+  } else {
+    closePrice = candle.close
+    const moved = trade.direction === 'BUY' ?
+      closePrice - trade.entryPrice :
+      trade.entryPrice - closePrice
+    pnl = moved > 0 ? 
+      trade.stake * 0.4 : -(trade.stake * 0.4)
+  }
+
+  state.balance += pnl
+
+  if (pnl > 0) state.consecutiveLosses = 0
+  else state.consecutiveLosses++
+
+  const closedTrade = {
+    ...trade,
+    exitPrice: closePrice,
+    pnl,
+    closeReason: outcome,
+    closeTime: candle.time,
+    balanceAfter: state.balance
+  }
+
+  state.allTrades.push(closedTrade)
+  state.openTrade = null
+
+  console.log(`<<< SWING TRADE CLOSED:
+    Direction: ${trade.direction}
+    Entry: ${trade.entryPrice}
+    Exit: ${closePrice}
+    P&L: $${pnl.toFixed(2)}
+    Reason: ${outcome}
+    Balance: $${state.balance.toFixed(2)}`)
+}
+
+function calculateSwingResults(state: any) {
+  const total = state.allTrades.length
+  const wins = state.allTrades.filter(
+    (t:any) => t.pnl > 0
+  ).length
+  const totalPnl = state.allTrades.reduce(
+    (s:number, t:any) => s + t.pnl, 0
+  )
+
+  console.log(`=== SWING BACKTEST COMPLETE ===
+    Total trades: ${total}
+    Wins: ${wins}
+    Win rate: ${total > 0 ? 
+      (wins/total*100).toFixed(1) : 0}%
+    Total P&L: $${totalPnl.toFixed(2)}`)
+
+  return {
+    totalTrades: total,
+    wins,
+    losses: total - wins,
+    winRate: total > 0 ? wins/total*100 : 0,
+    totalPnl,
+    finalBalance: state.balance,
+    trades: state.allTrades
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL FIX 3 — DATA MISMATCH PERMANENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Data mismatch persists meaning cache keys
+are different per strategy even on same data.
+
+Nuclear fix — share one single cache object
+in memory across all strategy backtests:
+
+// At server module level (not inside a function)
+// This persists for the server lifetime:
+
+const GLOBAL_CANDLE_CACHE: Map<string, {
+  candles: Candle[]
+  fetchedAt: number
+  hash: string
+}> = new Map()
+
+function getCacheKey(
+  symbol: string,
+  dateFrom: number | string,
+  dateTo: number | string
+): string {
+  // Always normalize to UTC midnight
+  const fromDate = new Date(
+    typeof dateFrom === 'string' ? 
+    dateFrom : dateFrom * 1000
+  )
+  fromDate.setUTCHours(0, 0, 0, 0)
+  
+  const toDate = new Date(
+    typeof dateTo === 'string' ?
+    dateTo : dateTo * 1000
+  )
+  toDate.setUTCHours(23, 59, 59, 0)
+  
+  const fromUnix = Math.floor(
+    fromDate.getTime() / 1000
+  )
+  const toUnix = Math.floor(
+    toDate.getTime() / 1000
+  )
+  
+  return `${symbol}_5m_${fromUnix}_${toUnix}`
+}
+
+async function getBacktestCandles(
+  symbol: string,
+  dateFrom: number | string,
+  dateTo: number | string
+): Promise<Candle[]> {
+
+  const key = getCacheKey(symbol, dateFrom, dateTo)
+
+  // Check memory cache first
+  if (GLOBAL_CANDLE_CACHE.has(key)) {
+    const cached = GLOBAL_CANDLE_CACHE.get(key)!
+    console.log(`Memory cache hit: ${key}
+      Candles: ${cached.candles.length}
+      Hash: ${cached.hash}`)
+    return cached.candles
+  }
+
+  // Check disk cache
+  const cacheFile = path.join(
+    __dirname, '../data/candle-cache',
+    `${key}.json`
+  )
+
+  if (fs.existsSync(cacheFile)) {
+    const disk = JSON.parse(
+      fs.readFileSync(cacheFile, 'utf8')
+    )
+    const candles = disk.candles as Candle[]
+    const hash = computeHash(candles)
+    
+    // Store in memory too
+    GLOBAL_CANDLE_CACHE.set(key, {
+      candles, fetchedAt: disk.fetchedAt, hash
+    })
+    
+    console.log(`Disk cache hit: ${key}
+      Candles: ${candles.length}
+      Hash: ${hash}`)
+    return candles
+  }
+
+  // Fetch from Deriv
+  console.log(`Cache miss: fetching ${key}`)
+  const candles = await fetchBacktestCandles(
+    symbol,
+    typeof dateFrom === 'string' ?
+      Math.floor(new Date(dateFrom)
+        .setUTCHours(0,0,0,0)/1000) :
+      dateFrom,
+    typeof dateTo === 'string' ?
+      Math.floor(new Date(dateTo)
+        .setUTCHours(23,59,59,0)/1000) :
+      dateTo
+  )
+
+  const hash = computeHash(candles)
+
+  // Save to memory and disk
+  GLOBAL_CANDLE_CACHE.set(key, {
+    candles, fetchedAt: Date.now(), hash
+  })
+
+  fs.mkdirSync(path.dirname(cacheFile), 
+    { recursive: true })
+  fs.writeFileSync(cacheFile, JSON.stringify({
+    symbol, key, candles,
+    fetchedAt: Date.now(), hash
+  }))
+
+  console.log(`Fetched and cached: ${key}
+    Candles: ${candles.length}
+    Hash: ${hash}`)
+
+  return candles
+}
+
+function computeHash(candles: Candle[]): string {
+  // Always same result for same candles
+  const sorted = [...candles].sort(
+    (a,b) => a.time - b.time
+  )
+  const sum = sorted.reduce(
+    (s,c) => s + c.close, 0
+  )
+  return `${sorted.length}:${sum.toFixed(2)}`
+}
+
+Replace ALL calls to loadFromCache() and
+saveToCache() and fetchBacktestCandles()
+in every strategy backtest with:
+getBacktestCandles(symbol, dateFrom, dateTo)
+
+This guarantees ALL strategies for the same
+symbol and date range use identical candles
+and the hash will always match.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL FIX 4 — ATR CALCULATION FOR V10
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+V10 price is ~5,000 while V75 is ~38,000.
+ATR values are proportionally different.
+
+V75 ATR on 5m: typically 50-200 pips
+V10 ATR on 5m: typically 5-25 pips
+(V10 is much calmer — 10% of V75 volatility)
+
+The stop loss calculation uses ATR * 0.8
+For V10: 15 pips minimum, 50 pips maximum
+
+But if ATR is returning V75-scale numbers
+for V10 (because the same ATR function
+is shared), stops will be wildly wrong.
+
+Fix by adding pair-specific ATR scaling:
+
+function getStopDistance(
+  candles5m: Candle[],
+  pair: string
+): number {
+
+  const atr = calculateATR(candles5m, 14)
+  
+  console.log(`ATR for ${pair}: ${atr.toFixed(4)}`)
+  
+  if (pair === 'R_10') {
+    const stopDist = atr * 0.8
+    const min = 5   // 5 pip minimum for V10
+    const max = 50  // 50 pip maximum for V10
+    return Math.max(min, Math.min(max, stopDist))
+  } else {
+    const stopDist = atr * 1.0
+    const min = 30  // 30 pip minimum for V75
+    const max = 120 // 120 pip maximum for V75
+    return Math.max(min, Math.min(max, stopDist))
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 5 — CLEAR EVERYTHING AND RERUN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After all fixes:
+
+1. Delete all files in:
+   /server/data/candle-cache/
+   Start completely fresh.
+
+2. Clear GLOBAL_CANDLE_CACHE in memory
+   by restarting the server.
+
+3. Run backtests in this order:
+
+   TEST A — V75 Sniper (control):
+   Should still show ~54% WR and +$531
+   If this changes something is broken
+
+   TEST B — V75 Swing:
+   Should now execute trades
+   Check console for:
+   "SWING BUY SIGNAL" or "SWING SELL SIGNAL"
+   ">>> SWING TRADE OPENED"
+   "<<< SWING TRADE CLOSED"
+   Target: 5-20 trades over the test period
+
+   TEST C — V10 Range Scalper:
+   Should now show positive P&L
+   Check console for trade level logs
+   Verify stop is on correct side
+   Target: 0% disappears, real WR shows
+
+4. After all three run:
+   Check hash matches between strategies
+   that use same pair/date:
+   Sniper hash should equal Swing hash
+   (both R_75 same dates same candles)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+V10 RANGE SCALPER:
+☐ Payout rate hardcoded to 0.87
+☐ P&L log shows WIN or LOSS correctly
+☐ Stop BELOW entry for BUY confirmed in logs
+☐ Stop ABOVE entry for SELL confirmed in logs
+☐ TP at middle BB confirmed in logs
+☐ ATR values in 5-25 range for V10
+☐ Win rate > 0%
+☐ Some trades showing positive P&L
+
+V75 SWING:
+☐ Console shows "SWING BACKTEST START"
+☐ 1h candle count logged (expect 100+)
+☐ 4h candle count logged (expect 20+)
+☐ Evaluation logs every 500 candles
+☐ At least one "SWING BUY/SELL SIGNAL" logged
+☐ At least one trade opened and closed
+☐ Win rate > 0%
+☐ Results make mathematical sense
+
+DATA MISMATCH:
+☐ Single getCacheKey function used everywhere
+☐ GLOBAL_CANDLE_CACHE shared in memory
+☐ Same symbol + date = same hash always
+☐ No "Data mismatch" warning in UI
+☐ Sniper and Swing show same hash for
+   same date range on R_75
+
+Do not mark complete until:
+- V75 Swing shows at least 5 trades
+- V10 shows positive P&L on at least some trades  
+- No data mismatch warnings appear

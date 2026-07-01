@@ -114,8 +114,14 @@ interface CacheEntry {
   count: number;
 }
 
+function normalizeMidnightUTC(unix: number): number {
+  const d = new Date(unix * 1000);
+  d.setUTCHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
 function getCacheKey(dateFrom: number, dateTo: number): string {
-  return `${SYMBOL}_5m_${dateFrom}_${dateTo}`;
+  return `${SYMBOL}_5m_${normalizeMidnightUTC(dateFrom)}_${normalizeMidnightUTC(dateTo)}`;
 }
 
 function getCachePath(key: string): string {

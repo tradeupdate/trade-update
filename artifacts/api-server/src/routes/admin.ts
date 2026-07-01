@@ -15,6 +15,7 @@ import { derivService } from "../services/deriv.js";
 import { runDeterministicBacktest, deleteCacheFile, getCacheStatus } from "../services/backtest-engine.js";
 import { runSwingBacktest } from "../services/swing-backtest-engine.js";
 import { runReversalBacktest } from "../services/reversal-backtest-engine.js";
+import { runV10Backtest } from "../services/v10-backtest-engine.js";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
@@ -424,7 +425,7 @@ router.post("/backtest/run", async (req, res) => {
       sessionEndHour: sessionEndHour ?? 20,
     };
 
-    let result: Awaited<ReturnType<typeof runDeterministicBacktest>> | Awaited<ReturnType<typeof runSwingBacktest>> | Awaited<ReturnType<typeof runReversalBacktest>>;
+    let result: Awaited<ReturnType<typeof runDeterministicBacktest>> | Awaited<ReturnType<typeof runSwingBacktest>> | Awaited<ReturnType<typeof runReversalBacktest>> | Awaited<ReturnType<typeof runV10Backtest>>;
 
     if (strategy.type === "swing") {
       const swingConfig = {
@@ -437,6 +438,14 @@ router.post("/backtest/run", async (req, res) => {
         consecutiveLossStop: strategy.consecutiveLossStop ?? 2,
       };
       result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000);
+    } else if (strategy.type === "mean_reversion") {
+      const v10Config = {
+        scoreThreshold: strategy.scoreThreshold ?? 18,
+        maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
+        maxTradesDay: strategy.maxTradesDay ?? 4,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
+      };
+      result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000);
     } else if (strategy.type === "reversal") {
       const reversalConfig = {
         scoreThreshold: strategy.scoreThreshold ?? 20,
@@ -476,7 +485,7 @@ router.post("/backtest/run", async (req, res) => {
       createdAt: now,
     });
 
-    const isSwing = strategy.type === "swing";
+    const isSniperOnly = strategy.type !== "swing" && strategy.type !== "reversal" && strategy.type !== "mean_reversion";
     res.json({
       id,
       runId: result.runId,
@@ -498,10 +507,10 @@ router.post("/backtest/run", async (req, res) => {
       dataSource: result.dataSource,
       dateFrom: from,
       dateTo: to,
-      featureImportance: isSwing ? null : (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).featureImportance,
-      regimeStats: isSwing ? null : (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).regimeStats,
-      scoreHistogram: isSwing ? null : (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).scoreHistogram,
-      partialExitStats: result.partialExitStats,
+      featureImportance: isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).featureImportance : null,
+      regimeStats: isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).regimeStats : null,
+      scoreHistogram: isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).scoreHistogram : null,
+      partialExitStats: (result as Awaited<ReturnType<typeof runSwingBacktest>>).partialExitStats ?? null,
       trades: result.trades,
       strategyType: strategy.type,
     });

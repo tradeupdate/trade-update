@@ -4,3 +4,4 @@
 - [Swing strategy architecture](swing-strategy-arch.md) — swing routing in bot.ts, scoring/backtest engines, Candle volume field requirement
 - [Pre-live safety architecture](prelive-safety-arch.md) — keep-alive, hard stop, capital preservation, conviction sizing, daily compound design
 - [V10 strategy architecture](v10-strategy-arch.md) — multi-pair deriv service, R_10 req_id ranges, scoring-v10.ts engine, pair switch API, V10 bot routing decisions
+- [Backtest routing and engines](backtest-routing.md) — strategy type→engine mapping, V10 binary payout model, swing EMA/RSI signal, cache normalization
