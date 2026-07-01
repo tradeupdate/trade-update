@@ -40,6 +40,7 @@ interface InProgressCandle {
   volume: number;
 }
 
+type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h";
 type TickListener = (tick: Tick, symbol: string) => void;
 type CandleListener = (candle: Candle, tf: "1m" | "5m" | "15m", symbol: string) => void;
 type ReconnectListener = () => void;
@@ -54,6 +55,29 @@ const WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=1089";
 const PING_INTERVAL = 25000;
 const BACKOFF = [3000, 6000, 12000, 30000];
 
+const TF_MAX: Record<Timeframe, number> = {
+  "1m": 1000,
+  "5m": 1000,
+  "15m": 500,
+  "1h": 200,
+  "4h": 100,
+};
+
+function granularityToTf(g: number): Timeframe | null {
+  const map: Record<number, Timeframe> = { 60: "1m", 300: "5m", 900: "15m", 3600: "1h", 14400: "4h" };
+  return map[g] ?? null;
+}
+
+function upsertCandle(store: Candle[], candle: Candle, maxLen: number): void {
+  const idx = store.findIndex((c) => c.time === candle.time);
+  if (idx >= 0) {
+    store[idx] = candle;
+  } else {
+    store.push(candle);
+    if (store.length > maxLen) store.shift();
+  }
+}
+
 // Payout rate cache per pair
 const payoutCache: Record<string, { rate: number; updatedAt: number }> = {};
 const PAYOUT_CACHE_DURATION = 30 * 60 * 1000;
@@ -65,19 +89,21 @@ class DerivService {
   private hasConnectedOnce = false;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
-  // R_75 candle stores
+  // ── R_75 candle stores ──────────────────────────────────────────────────────
   private candles1m: Candle[] = [];
   private candles5m: Candle[] = [];
   private candles15m: Candle[] = [];
   private candles1h: Candle[] = [];
+  private candles4h: Candle[] = [];
   private currentCandle: InProgressCandle | null = null;
   private latestTick: Tick = { price: 39500, timestamp: Date.now() };
 
-  // R_10 candle stores
+  // ── R_10 candle stores ──────────────────────────────────────────────────────
   private candles1m_r10: Candle[] = [];
   private candles5m_r10: Candle[] = [];
   private candles15m_r10: Candle[] = [];
   private candles1h_r10: Candle[] = [];
+  private candles4h_r10: Candle[] = [];
   private currentCandle_r10: InProgressCandle | null = null;
   private latestTick_r10: Tick = { price: 8000, timestamp: Date.now() };
   private r10PriceObserved = false;
@@ -134,19 +160,23 @@ class DerivService {
   }
 
   private subscribe(isReconnect = false) {
-    // R_75 subscriptions (req_id 1=1m, 5=5m, 15=15m, 60=1h)
+    // ── R_75 — seed + subscribe all timeframes ──────────────────────────────
+    // req_ids: 1m=1, 5m=5, 15m=15, 1h=60, 4h=240
     this.send({ ticks: SYMBOL_R75, subscribe: 1 });
-    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 60, count: 200, end: "latest", subscribe: 1, req_id: 1 });
-    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 300, count: 120, end: "latest", req_id: 5 });
-    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 900, count: 80, end: "latest", req_id: 15 });
-    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 3600, count: 120, end: "latest", req_id: 60 });
+    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 60,    count: 1000, end: "latest", subscribe: 1, req_id: 1   });
+    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 300,   count: 1000, end: "latest", subscribe: 1, req_id: 5   });
+    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 900,   count: 500,  end: "latest", subscribe: 1, req_id: 15  });
+    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 3600,  count: 200,  end: "latest", subscribe: 1, req_id: 60  });
+    this.send({ ticks_history: SYMBOL_R75, style: "candles", granularity: 14400, count: 100,  end: "latest", subscribe: 1, req_id: 240 });
 
-    // R_10 subscriptions (req_id 101=1m, 105=5m, 115=15m, 160=1h)
+    // ── R_10 — seed + subscribe all timeframes ──────────────────────────────
+    // req_ids: 1m=101, 5m=105, 15m=115, 1h=160, 4h=340
     this.send({ ticks: SYMBOL_R10, subscribe: 1 });
-    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 60, count: 200, end: "latest", subscribe: 1, req_id: 101 });
-    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 300, count: 120, end: "latest", req_id: 105 });
-    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 900, count: 80, end: "latest", req_id: 115 });
-    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 3600, count: 120, end: "latest", req_id: 160 });
+    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 60,    count: 1000, end: "latest", subscribe: 1, req_id: 101 });
+    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 300,   count: 1000, end: "latest", subscribe: 1, req_id: 105 });
+    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 900,   count: 500,  end: "latest", subscribe: 1, req_id: 115 });
+    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 3600,  count: 200,  end: "latest", subscribe: 1, req_id: 160 });
+    this.send({ ticks_history: SYMBOL_R10, style: "candles", granularity: 14400, count: 100,  end: "latest", subscribe: 1, req_id: 340 });
 
     if (isReconnect) {
       this.reconnectListeners.forEach((fn) => { try { fn(); } catch {} });
@@ -170,8 +200,28 @@ class DerivService {
     setTimeout(() => this.connect(), delay);
   }
 
+  // ── Returns the mutable candle array for a given symbol + timeframe ─────────
+  private getStore(symbol: string, tf: Timeframe): Candle[] {
+    if (symbol === SYMBOL_R10) {
+      switch (tf) {
+        case "1m":  return this.candles1m_r10;
+        case "5m":  return this.candles5m_r10;
+        case "15m": return this.candles15m_r10;
+        case "1h":  return this.candles1h_r10;
+        case "4h":  return this.candles4h_r10;
+      }
+    }
+    switch (tf) {
+      case "1m":  return this.candles1m;
+      case "5m":  return this.candles5m;
+      case "15m": return this.candles15m;
+      case "1h":  return this.candles1h;
+      case "4h":  return this.candles4h;
+    }
+  }
+
   private handleMessage(msg: Record<string, unknown>) {
-    // ── Tick messages (both R_75 and R_10 arrive as "tick") ──
+    // ── Tick (raw price from both symbols) ──────────────────────────────────
     if (msg.msg_type === "tick") {
       const tick = msg.tick as Record<string, unknown>;
       const price = Number(tick?.quote);
@@ -200,69 +250,71 @@ class DerivService {
       this.tickListeners.forEach((fn) => fn({ price, timestamp: ts }, symbol));
     }
 
-    // ── Candle history messages ──
-    if (msg.msg_type === "candles" || msg.msg_type === "ohlc") {
+    // ── Historical candle seed (bulk response) ──────────────────────────────
+    if (msg.msg_type === "candles") {
       const reqId = Number(msg.req_id);
-      const isR10 = reqId >= 100;
-
       const history = msg.candles as Array<Record<string, unknown>>;
-      if (history && Array.isArray(history)) {
-        const mapped: Candle[] = history.map((c) => ({
-          time: Number(c.epoch) * 1000,
-          open: Number(c.open),
-          high: Number(c.high),
-          low: Number(c.low),
-          close: Number(c.close),
-          volume: 0,
-        }));
+      if (!history || !Array.isArray(history)) return;
 
-        if (isR10) {
-          if (reqId === 105) { this.candles5m_r10 = mapped; logger.info(`Deriv: seeded ${mapped.length} V10 5m candles`); }
-          else if (reqId === 115) { this.candles15m_r10 = mapped; logger.info(`Deriv: seeded ${mapped.length} V10 15m candles`); }
-          else if (reqId === 160) { this.candles1h_r10 = mapped; logger.info(`Deriv: seeded ${mapped.length} V10 1h candles`); }
-          else { this.candles1m_r10 = mapped; this.buildHigherTimeframes_r10(); logger.info(`Deriv: seeded ${mapped.length} V10 1m candles`); }
-        } else {
-          if (reqId === 5) { this.candles5m = mapped; logger.info(`Deriv: seeded ${mapped.length} 5m candles`); }
-          else if (reqId === 15) { this.candles15m = mapped; logger.info(`Deriv: seeded ${mapped.length} 15m candles`); }
-          else if (reqId === 60) { this.candles1h = mapped; logger.info(`Deriv: seeded ${mapped.length} 1h candles`); }
-          else { this.candles1m = mapped; this.buildHigherTimeframes(); }
-        }
-      }
+      const mapped: Candle[] = history.map((c) => ({
+        time: Number(c.epoch) * 1000,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: 0,
+      }));
 
+      // Route by req_id to the correct symbol + tf store
+      let symbol = SYMBOL_R75;
+      let tf: Timeframe = "1m";
+
+      if      (reqId === 1   || reqId === 101) { tf = "1m";  symbol = reqId >= 100 ? SYMBOL_R10 : SYMBOL_R75; }
+      else if (reqId === 5   || reqId === 105) { tf = "5m";  symbol = reqId >= 100 ? SYMBOL_R10 : SYMBOL_R75; }
+      else if (reqId === 15  || reqId === 115) { tf = "15m"; symbol = reqId >= 100 ? SYMBOL_R10 : SYMBOL_R75; }
+      else if (reqId === 60  || reqId === 160) { tf = "1h";  symbol = reqId >= 100 ? SYMBOL_R10 : SYMBOL_R75; }
+      else if (reqId === 240 || reqId === 340) { tf = "4h";  symbol = reqId >= 100 ? SYMBOL_R10 : SYMBOL_R75; }
+      else return; // unknown req_id (e.g. payout proposals arrive as "proposal" not "candles")
+
+      const store = this.getStore(symbol, tf);
+      store.length = 0;
+      store.push(...mapped);
+      logger.info(`Deriv: seeded ${mapped.length} ${symbol === SYMBOL_R10 ? "V10 " : ""}${tf} candles`);
+    }
+
+    // ── Live ohlc update (single candle, updating or new) ───────────────────
+    if (msg.msg_type === "ohlc") {
       const ohlc = msg.ohlc as Record<string, unknown>;
-      if (ohlc) {
-        const candle: Candle = {
-          time: Number(ohlc.open_time) * 1000,
-          open: Number(ohlc.open),
-          high: Number(ohlc.high),
-          low: Number(ohlc.low),
-          close: Number(ohlc.close),
-          volume: 0,
-        };
-        const symbol = String(ohlc.symbol || "R_75");
+      if (!ohlc) return;
 
-        if (symbol === SYMBOL_R10) {
-          const existing = this.candles1m_r10.findIndex((c) => c.time === candle.time);
-          if (existing >= 0) this.candles1m_r10[existing] = candle;
-          else { this.candles1m_r10.push(candle); if (this.candles1m_r10.length > 500) this.candles1m_r10.shift(); }
-          this.buildHigherTimeframes_r10();
-          this.candleListeners.forEach((fn) => fn(candle, "1m", SYMBOL_R10));
-        } else {
-          const existing = this.candles1m.findIndex((c) => c.time === candle.time);
-          if (existing >= 0) this.candles1m[existing] = candle;
-          else { this.candles1m.push(candle); if (this.candles1m.length > 500) this.candles1m.shift(); }
-          this.buildHigherTimeframes();
-          this.candleListeners.forEach((fn) => fn(candle, "1m", SYMBOL_R75));
-        }
+      const granularity = Number(ohlc.granularity);
+      const tf = granularityToTf(granularity);
+      if (!tf) return;
+
+      const symbol = String(ohlc.symbol || "R_75");
+      const candle: Candle = {
+        time: Number(ohlc.open_time) * 1000,
+        open: Number(ohlc.open),
+        high: Number(ohlc.high),
+        low: Number(ohlc.low),
+        close: Number(ohlc.close),
+        volume: 0,
+      };
+
+      const store = this.getStore(symbol, tf);
+      upsertCandle(store, candle, TF_MAX[tf]);
+
+      // Only emit candle listeners for 1m (bot loop listens on this)
+      if (tf === "1m") {
+        this.candleListeners.forEach((fn) => fn(candle, "1m", symbol));
       }
     }
 
-    // ── Proposal (trading + payout rate) ──
+    // ── Proposal (trading + payout rate) ────────────────────────────────────
     if (msg.msg_type === "proposal") {
       const proposal = msg.proposal as Record<string, unknown>;
       const reqId = Number(msg.req_id);
 
-      // Check if this is a payout rate request
       if (reqId >= 1000) {
         const payoutCb = this.payoutCallbacks.get(reqId);
         if (payoutCb) {
@@ -315,15 +367,13 @@ class DerivService {
     }
   }
 
+  // ── Tick-driven 1m candle builder (real-time price, completes when minute rolls) ──
   private updateCurrentCandle(price: number, ts: number) {
     const minuteTs = Math.floor(ts / 60000) * 60000;
     if (!this.currentCandle || this.currentCandle.time !== minuteTs) {
       if (this.currentCandle) {
         const completed: Candle = { ...this.currentCandle };
-        const existing = this.candles1m.findIndex((c) => c.time === completed.time);
-        if (existing >= 0) this.candles1m[existing] = completed;
-        else { this.candles1m.push(completed); if (this.candles1m.length > 500) this.candles1m.shift(); }
-        this.buildHigherTimeframes();
+        upsertCandle(this.candles1m, completed, TF_MAX["1m"]);
         this.candleListeners.forEach((fn) => fn(completed, "1m", SYMBOL_R75));
       }
       this.currentCandle = { time: minuteTs, open: price, high: price, low: price, close: price, volume: 0 };
@@ -339,10 +389,7 @@ class DerivService {
     if (!this.currentCandle_r10 || this.currentCandle_r10.time !== minuteTs) {
       if (this.currentCandle_r10) {
         const completed: Candle = { ...this.currentCandle_r10 };
-        const existing = this.candles1m_r10.findIndex((c) => c.time === completed.time);
-        if (existing >= 0) this.candles1m_r10[existing] = completed;
-        else { this.candles1m_r10.push(completed); if (this.candles1m_r10.length > 500) this.candles1m_r10.shift(); }
-        this.buildHigherTimeframes_r10();
+        upsertCandle(this.candles1m_r10, completed, TF_MAX["1m"]);
         this.candleListeners.forEach((fn) => fn(completed, "1m", SYMBOL_R10));
       }
       this.currentCandle_r10 = { time: minuteTs, open: price, high: price, low: price, close: price, volume: 0 };
@@ -351,51 +398,6 @@ class DerivService {
       if (price > this.currentCandle_r10.high) this.currentCandle_r10.high = price;
       if (price < this.currentCandle_r10.low) this.currentCandle_r10.low = price;
     }
-  }
-
-  private buildHigherTimeframes() {
-    this.candles5m = this.mergeHigherTf(this.candles5m, 5);
-    this.candles15m = this.mergeHigherTf(this.candles15m, 15);
-    this.candles1h = this.mergeHigherTf(this.candles1h, 60);
-  }
-
-  private buildHigherTimeframes_r10() {
-    this.candles5m_r10 = this.mergeHigherTf_r10(this.candles5m_r10, 5);
-    this.candles15m_r10 = this.mergeHigherTf_r10(this.candles15m_r10, 15);
-    this.candles1h_r10 = this.mergeHigherTf_r10(this.candles1h_r10, 60);
-  }
-
-  private mergeHigherTf(existing: Candle[], minutesPerCandle: number): Candle[] {
-    if (this.candles1m.length === 0) return existing;
-    const built = this.groupCandles(this.candles1m, minutesPerCandle);
-    if (built.length === 0) return existing;
-    const historicalSeed = existing.filter((c) => c.time < built[0].time);
-    return [...historicalSeed, ...built].slice(-500);
-  }
-
-  private mergeHigherTf_r10(existing: Candle[], minutesPerCandle: number): Candle[] {
-    if (this.candles1m_r10.length === 0) return existing;
-    const built = this.groupCandles(this.candles1m_r10, minutesPerCandle);
-    if (built.length === 0) return existing;
-    const historicalSeed = existing.filter((c) => c.time < built[0].time);
-    return [...historicalSeed, ...built].slice(-500);
-  }
-
-  private groupCandles(candles: Candle[], n: number): Candle[] {
-    const result: Candle[] = [];
-    for (let i = 0; i < candles.length; i += n) {
-      const slice = candles.slice(i, i + n);
-      if (!slice.length) continue;
-      result.push({
-        time: slice[0].time,
-        open: slice[0].open,
-        high: Math.max(...slice.map((c) => c.high)),
-        low: Math.min(...slice.map((c) => c.low)),
-        close: slice[slice.length - 1].close,
-        volume: slice.reduce((s, c) => s + c.volume, 0),
-      });
-    }
-    return result;
   }
 
   private send(data: unknown) {
@@ -412,17 +414,17 @@ class DerivService {
     return pair === SYMBOL_R10 ? this.latestTick_r10 : this.latestTick;
   }
 
-  getCandles(tf: "1m" | "5m" | "15m" | "1h", count = 200): Candle[] {
+  getCandles(tf: Timeframe, count = 200): Candle[] {
     return this.getCandlesForPair(SYMBOL_R75, tf, count);
   }
 
-  getCandlesForPair(pair: string, tf: "1m" | "5m" | "15m" | "1h", count = 200): Candle[] {
-    if (pair === SYMBOL_R10) {
-      const src = tf === "1m" ? this.candles1m_r10 : tf === "5m" ? this.candles5m_r10 : tf === "15m" ? this.candles15m_r10 : this.candles1h_r10;
-      return src.slice(-count);
-    }
-    const src = tf === "1m" ? this.candles1m : tf === "5m" ? this.candles5m : tf === "15m" ? this.candles15m : this.candles1h;
-    return src.slice(-count);
+  getCandlesForPair(pair: string, tf: Timeframe, count = 200): Candle[] {
+    const store = this.getStore(pair === SYMBOL_R10 ? SYMBOL_R10 : SYMBOL_R75, tf);
+    return store.slice(-count);
+  }
+
+  getCandleStoreSize(pair: string, tf: Timeframe): number {
+    return this.getStore(pair === SYMBOL_R10 ? SYMBOL_R10 : SYMBOL_R75, tf).length;
   }
 
   onTick(fn: TickListener): () => void {
@@ -454,7 +456,7 @@ class DerivService {
     });
   }
 
-  // ── Payout rate detection (Part 4) ───────────────────────────────────────────
+  // ── Payout rate detection ─────────────────────────────────────────────────
 
   async fetchPayoutRate(pair: string, stake: number): Promise<number> {
     if (!this.connected) return 0.85;
@@ -491,7 +493,7 @@ class DerivService {
     return rate;
   }
 
-  // ── Order placement ───────────────────────────────────────────────────────────
+  // ── Order placement ───────────────────────────────────────────────────────
 
   async placeOrder(
     direction: "BUY" | "SELL",
@@ -530,3 +532,79 @@ class DerivService {
 }
 
 export const derivService = new DerivService();
+
+// ── Shared chunked candle fetcher for backtests ───────────────────────────────
+// Opens a temporary WS per chunk, walks backwards from dateTo to dateFrom.
+
+export async function fetchCandlesChunked(
+  symbol: string,
+  granularity: number,
+  dateFrom: number,
+  dateTo: number
+): Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>> {
+  const CHUNK_SIZE = 5000;
+  const MAX_CHUNKS = 10;
+  const all: Array<{ time: number; open: number; high: number; low: number; close: number }> = [];
+  let currentEnd = dateTo;
+  let chunks = 0;
+
+  while (currentEnd > dateFrom && chunks < MAX_CHUNKS) {
+    chunks++;
+    const chunk = await fetchOneChunk(symbol, granularity, CHUNK_SIZE, currentEnd);
+    if (!chunk.length) break;
+    all.push(...chunk);
+    const earliest = Math.min(...chunk.map((c) => c.time));
+    currentEnd = earliest - granularity;
+    if (earliest <= dateFrom) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const filtered = all.filter((c) => c.time >= dateFrom && c.time <= dateTo);
+  const sorted = filtered.sort((a, b) => a.time - b.time);
+  const deduped = sorted.filter((c, i) => i === 0 || c.time !== sorted[i - 1]!.time);
+
+  logger.info(
+    { symbol, granularity, chunks, total: all.length, filtered: deduped.length },
+    "fetchCandlesChunked complete"
+  );
+  return deduped;
+}
+
+function fetchOneChunk(
+  symbol: string,
+  granularity: number,
+  count: number,
+  endTime: number
+): Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(WS_URL);
+    const timeout = setTimeout(() => { try { ws.terminate(); } catch {} resolve([]); }, 20000);
+
+    ws.on("open", () => {
+      ws.send(JSON.stringify({ ticks_history: symbol, style: "candles", granularity, count, end: endTime }));
+    });
+
+    ws.on("message", (data: Buffer) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.msg_type === "candles" && Array.isArray(msg.candles)) {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(msg.candles.map((c: Record<string, unknown>) => ({
+            time: Number(c.epoch),
+            open: parseFloat(String(c.open)),
+            high: parseFloat(String(c.high)),
+            low: parseFloat(String(c.low)),
+            close: parseFloat(String(c.close)),
+          })));
+        } else if (msg.error) {
+          clearTimeout(timeout);
+          ws.close();
+          resolve([]);
+        }
+      } catch { /* skip */ }
+    });
+
+    ws.on("error", () => { clearTimeout(timeout); try { ws.terminate(); } catch {} resolve([]); });
+  });
+}

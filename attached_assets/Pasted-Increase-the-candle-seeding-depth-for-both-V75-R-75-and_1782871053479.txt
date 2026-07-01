@@ -1,0 +1,621 @@
+Increase the candle seeding depth for both
+V75 (R_75) and V10 (R_10) pairs.
+Current seeding is far too shallow for 
+reliable strategy evaluation and backtesting.
+
+Target candle counts after this fix:
+1m candles: 1000 (was 200)
+5m candles: 1000 (was 120)
+15m candles: 500 (was 80)
+1h candles: built from 5m (target ~150+)
+4h candles: built from 1h (target ~35+)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 1 — INCREASE LIVE CANDLE SEEDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When the DerivService first connects and
+subscribes to a pair, it seeds historical
+candles. Increase the seed counts:
+
+Current seeding request (wrong):
+{
+  ticks_history: symbol,
+  style: "candles",
+  granularity: 60,
+  count: 200,
+  end: "latest",
+  subscribe: 1
+}
+
+Replace with a multi-request seeder that
+fetches enough history for ALL strategies:
+
+async function seedHistoricalCandles(
+  symbol: string
+): Promise<void> {
+  
+  console.log(`Seeding ${symbol} candles...`)
+
+  // SEED 1M CANDLES
+  // Need 1000 x 1m = last ~16 hours
+  await fetchAndStore({
+    ticks_history: symbol,
+    style: "candles",
+    granularity: 60,
+    count: 1000,
+    end: "latest"
+  }, '1m')
+
+  // Small delay between requests
+  await sleep(500)
+
+  // SEED 5M CANDLES  
+  // Need 1000 x 5m = last ~3.5 days
+  await fetchAndStore({
+    ticks_history: symbol,
+    style: "candles",
+    granularity: 300,
+    count: 1000,
+    end: "latest"
+  }, '5m')
+
+  await sleep(500)
+
+  // SEED 15M CANDLES
+  // Need 500 x 15m = last ~5 days
+  await fetchAndStore({
+    ticks_history: symbol,
+    style: "candles",
+    granularity: 900,
+    count: 500,
+    end: "latest"
+  }, '15m')
+
+  await sleep(500)
+
+  // SEED 1H CANDLES
+  // Need 200 x 1h = last ~8 days
+  await fetchAndStore({
+    ticks_history: symbol,
+    style: "candles",
+    granularity: 3600,
+    count: 200,
+    end: "latest"
+  }, '1h')
+
+  await sleep(500)
+
+  // SEED 4H CANDLES (for Swing strategy)
+  // Need 100 x 4h = last ~17 days
+  await fetchAndStore({
+    ticks_history: symbol,
+    style: "candles",
+    granularity: 14400,
+    count: 100,
+    end: "latest"
+  }, '4h')
+
+  // Build derived arrays
+  candles1hFromFiveMin = build1hFromFiveMin(
+    candles5m
+  )
+  candles4hFromOneHour = build4hFromOneHour(
+    candles1hDirect || candles1hFromFiveMin
+  )
+
+  console.log(`${symbol} seeding complete:
+    1m: ${candles1m.length} candles
+    5m: ${candles5m.length} candles
+    15m: ${candles15m.length} candles
+    1h direct: ${candles1hDirect.length} candles
+    1h built: ${candles1hFromFiveMin.length} candles
+    4h direct: ${candles4hDirect.length} candles
+    4h built: ${candles4hFromOneHour.length} candles`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => 
+    setTimeout(resolve, ms))
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 2 — INCREASE BACKTEST CANDLE FETCH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The backtest fetches candles differently
+from the live seeder. Fix the backtest
+candle fetcher to get maximum history.
+
+Current backtest fetch (insufficient):
+Single request for 5000 candles maximum.
+
+Replace with CHUNKED FETCHING that gets
+the full date range requested:
+
+async function fetchBacktestCandles(
+  symbol: string,
+  dateFrom: number,
+  dateTo: number
+): Promise<Candle[]> {
+
+  const allCandles: Candle[] = []
+  const CHUNK_SIZE = 5000
+  const GRANULARITY = 300 // 5m candles
+  
+  let currentEnd = dateTo
+  let chunksAttempted = 0
+  const MAX_CHUNKS = 10
+
+  console.log(`Fetching ${symbol} candles:
+    From: ${new Date(dateFrom*1000).toISOString()}
+    To: ${new Date(dateTo*1000).toISOString()}
+    Expected: ~${Math.ceil(
+      (dateTo-dateFrom)/(GRANULARITY)
+    )} candles`)
+
+  while (
+    currentEnd > dateFrom && 
+    chunksAttempted < MAX_CHUNKS
+  ) {
+    chunksAttempted++
+    
+    console.log(`Fetching chunk ${chunksAttempted}:
+      End: ${new Date(currentEnd*1000).toISOString()}
+      Candles so far: ${allCandles.length}`)
+
+    const chunk = await fetchCandleChunk(
+      symbol,
+      GRANULARITY,
+      CHUNK_SIZE,
+      currentEnd
+    )
+
+    if (!chunk || chunk.length === 0) {
+      console.log(`No more candles available 
+        after chunk ${chunksAttempted}`)
+      break
+    }
+
+    allCandles.push(...chunk)
+
+    // Next chunk ends where this one started
+    const earliestInChunk = Math.min(
+      ...chunk.map(c => c.time)
+    )
+    currentEnd = earliestInChunk - GRANULARITY
+
+    await sleep(300) // Respect rate limits
+
+    if (earliestInChunk <= dateFrom) {
+      console.log(`Reached target start date`)
+      break
+    }
+  }
+
+  // Filter to exact date range
+  const filtered = allCandles.filter(
+    c => c.time >= dateFrom && c.time <= dateTo
+  )
+
+  // Sort and deduplicate
+  const sorted = filtered
+    .sort((a,b) => a.time - b.time)
+  
+  const deduped = sorted.filter((c, i) =>
+    i === 0 || c.time !== sorted[i-1].time
+  )
+
+  console.log(`Backtest candles ready:
+    Total fetched: ${allCandles.length}
+    After filter: ${filtered.length}
+    After dedup: ${deduped.length}
+    Date range: ${new Date(
+      deduped[0]?.time*1000
+    ).toISOString()} to ${new Date(
+      deduped[deduped.length-1]?.time*1000
+    ).toISOString()}`)
+
+  return deduped
+}
+
+async function fetchCandleChunk(
+  symbol: string,
+  granularity: number,
+  count: number,
+  endTime: number
+): Promise<Candle[]> {
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(
+      'wss://ws.binaryws.com/websockets/v3?app_id=1089'
+    )
+
+    const timeout = setTimeout(() => {
+      ws.close()
+      resolve([])
+    }, 15000) // 15 second timeout per chunk
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        ticks_history: symbol,
+        style: "candles",
+        granularity,
+        count,
+        end: endTime
+      }))
+    })
+
+    ws.on('message', (data: string) => {
+      clearTimeout(timeout)
+      
+      const response = JSON.parse(data)
+      
+      if (response.error) {
+        console.error(`Deriv error:`, response.error)
+        ws.close()
+        resolve([])
+        return
+      }
+
+      if (response.candles) {
+        const candles = response.candles.map(
+          (c: any) => ({
+            time: Number(c.epoch),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close)
+          })
+        )
+        ws.close()
+        resolve(candles)
+      }
+    })
+
+    ws.on('error', (err) => {
+      clearTimeout(timeout)
+      console.error(`WebSocket error:`, err)
+      ws.close()
+      resolve([])
+    })
+  })
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 3 — STORE ALL TIMEFRAMES IN MEMORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The DerivService must store ALL timeframes
+in memory per symbol, not just 1m and 5m.
+
+Update DerivService candle storage:
+
+interface CandleStore {
+  candles1m: Candle[]
+  candles5m: Candle[]
+  candles15m: Candle[]
+  candles1h: Candle[]
+  candles4h: Candle[]
+  lastUpdated: number
+}
+
+const candleStores: Map<string, CandleStore> 
+  = new Map()
+
+function initCandleStore(symbol: string): void {
+  candleStores.set(symbol, {
+    candles1m: [],
+    candles5m: [],
+    candles15m: [],
+    candles1h: [],
+    candles4h: [],
+    lastUpdated: 0
+  })
+}
+
+function addCandle(
+  symbol: string,
+  timeframe: string,
+  candle: Candle
+): void {
+  const store = candleStores.get(symbol)
+  if (!store) return
+
+  const key = `candles${timeframe}` as keyof CandleStore
+  const arr = store[key] as Candle[]
+
+  // Find if this candle time already exists
+  const existingIdx = arr.findIndex(
+    c => c.time === candle.time
+  )
+
+  if (existingIdx >= 0) {
+    // Update existing candle (still forming)
+    arr[existingIdx] = candle
+  } else {
+    // New candle
+    arr.push(candle)
+    // Keep rolling window
+    const maxCandles = {
+      '1m': 1000,
+      '5m': 1000,
+      '15m': 500,
+      '1h': 200,
+      '4h': 100
+    }
+    const max = maxCandles[
+      timeframe as keyof typeof maxCandles
+    ] || 200
+    
+    if (arr.length > max) {
+      arr.shift() // Remove oldest
+    }
+  }
+
+  store.lastUpdated = Date.now()
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 4 — SUBSCRIBE TO ALL TIMEFRAMES LIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After seeding, subscribe to live updates
+for all timeframes simultaneously:
+
+function subscribeAllTimeframes(
+  symbol: string
+): void {
+
+  // Subscribe to live candles for each
+  // timeframe we need
+  const granularities = [
+    { g: 60,    tf: '1m' },
+    { g: 300,   tf: '5m' },
+    { g: 900,   tf: '15m' },
+    { g: 3600,  tf: '1h' },
+    { g: 14400, tf: '4h' }
+  ]
+
+  granularities.forEach(({ g, tf }) => {
+    ws.send(JSON.stringify({
+      ticks_history: symbol,
+      style: "candles",
+      granularity: g,
+      count: 10, // Just recent for live updates
+      end: "latest",
+      subscribe: 1
+    }))
+    
+    console.log(`Subscribed to ${symbol} 
+      ${tf} candle stream`)
+  })
+
+  // Also subscribe to raw ticks for 
+  // real-time price display
+  ws.send(JSON.stringify({
+    ticks: symbol,
+    subscribe: 1
+  }))
+}
+
+Handle incoming candle updates:
+ws.on('message', (data: string) => {
+  const response = JSON.parse(data)
+  
+  if (response.ohlc) {
+    // Live candle update
+    const granularity = response.ohlc.granularity
+    const tf = granularityToTf(granularity)
+    
+    addCandle(symbol, tf, {
+      time: Number(response.ohlc.epoch),
+      open: Number(response.ohlc.open),
+      high: Number(response.ohlc.high),
+      low: Number(response.ohlc.low),
+      close: Number(response.ohlc.close)
+    })
+  }
+  
+  if (response.tick) {
+    // Raw tick for price display
+    updateLatestTick(symbol, {
+      price: Number(response.tick.quote),
+      time: Number(response.tick.epoch)
+    })
+  }
+})
+
+function granularityToTf(g: number): string {
+  const map: {[key:number]: string} = {
+    60: '1m', 300: '5m', 900: '15m',
+    3600: '1h', 14400: '4h'
+  }
+  return map[g] || '5m'
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 5 — EXPOSE ALL TIMEFRAMES VIA API
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Update the chart candles API endpoint to
+return data for all timeframes:
+
+GET /api/user/chart/candles?timeframe=1m
+GET /api/user/chart/candles?timeframe=5m
+GET /api/user/chart/candles?timeframe=15m
+GET /api/user/chart/candles?timeframe=1h
+GET /api/user/chart/candles?timeframe=4h
+
+Handler:
+app.get('/api/user/chart/candles', 
+  authenticateJWT, (req, res) => {
+  
+  const timeframe = req.query.timeframe || '5m'
+  const userId = req.user.id
+  const userPair = req.user.active_pair || 'R_75'
+  
+  const store = candleStores.get(userPair)
+  if (!store) {
+    return res.json({ candles: [], timeframe })
+  }
+  
+  const key = `candles${timeframe}` as 
+    keyof CandleStore
+  const candles = store[key] as Candle[]
+  
+  // Return last 200 for display
+  const recent = candles.slice(-200)
+  
+  console.log(`Chart candles requested:
+    User: ${userId}
+    Pair: ${userPair}
+    Timeframe: ${timeframe}
+    Count: ${recent.length}`)
+  
+  res.json({ 
+    candles: recent, 
+    timeframe,
+    pair: userPair,
+    totalStored: candles.length
+  })
+})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 6 — BACKTEST USES EXTENDED DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Update the backtest runner to use the new
+chunked fetcher and build all timeframes:
+
+async function runBacktest(params: {
+  userId: string
+  strategyId: string
+  dateFrom: string
+  dateTo: string
+}): Promise<BacktestResult> {
+
+  const strategy = getStrategy(params.strategyId)
+  const symbol = strategy.pair || 'R_75'
+  
+  // Convert dates to unix
+  const fromUnix = normalizeDateToMidnightUTC(
+    params.dateFrom
+  )
+  const toUnix = normalizeDateToMidnightUTC(
+    params.dateTo
+  ) + 86399 // End of day
+
+  // Check cache first
+  const cacheKey = 
+    `${symbol}_5m_${fromUnix}_${toUnix}`
+  const cached = loadFromCache(cacheKey)
+  
+  let candles5m: Candle[]
+  
+  if (cached) {
+    console.log(`Using cached data: ${cacheKey}`)
+    candles5m = cached.candles
+  } else {
+    console.log(`Fetching fresh data: ${cacheKey}`)
+    candles5m = await fetchBacktestCandles(
+      symbol, fromUnix, toUnix
+    )
+    saveToCache(cacheKey, candles5m)
+  }
+
+  console.log(`Backtest data ready:
+    Symbol: ${symbol}
+    5m candles: ${candles5m.length}
+    Expected for date range: ~${Math.ceil(
+      (toUnix - fromUnix) / 300
+    )}`)
+
+  // Build all derived timeframes
+  const candles1h = build1hFromFiveMin(candles5m)
+  const candles4h = build4hFromOneHour(candles1h)
+  const candles15m = build15mFromFiveMin(candles5m)
+
+  console.log(`Derived timeframes:
+    15m: ${candles15m.length}
+    1h: ${candles1h.length}
+    4h: ${candles4h.length}`)
+
+  // Route to correct backtest engine
+  if (strategy.name.includes('Swing')) {
+    return runSwingBacktest(
+      candles5m, candles15m, candles1h, 
+      candles4h, strategy, params
+    )
+  } else if (strategy.name.includes('Reversal')) {
+    return runReversalBacktest(
+      candles5m, candles15m, strategy, params
+    )
+  } else if (strategy.name.includes('V10')) {
+    return runV10Backtest(
+      candles5m, candles15m, strategy, params
+    )
+  } else {
+    return runSniperBacktest(
+      candles5m, candles15m, strategy, params
+    )
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 7 — UPDATE V10 PRICE VALIDATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The log shows V10 first tick at 5002.522.
+This confirms V10 trades around 4,500-5,500.
+Update the V10 price validation range:
+
+Old:
+if (pair === 'R_10') {
+  return price >= 3000 && price <= 20000
+}
+
+New (based on confirmed live price):
+if (pair === 'R_10') {
+  return price >= 4000 && price <= 7000
+}
+
+Also update backtest validation message:
+"V10 price range confirmed: ~5,000
+Expected range: 4,000-7,000"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LIVE SEEDING:
+☐ Startup logs show 1000 x 1m candles seeded
+☐ Startup logs show 1000 x 5m candles seeded
+☐ Startup logs show 500 x 15m candles seeded
+☐ Startup logs show 200 x 1h candles seeded
+☐ Startup logs show 100 x 4h candles seeded
+☐ V75 price confirmed in 35,000-42,000 range
+☐ V10 price confirmed in 4,000-7,000 range
+☐ All timeframe subscriptions active after seed
+
+BACKTEST:
+☐ Chunked fetcher requests multiple chunks
+☐ Each chunk logged as it arrives
+☐ Final candle count matches expected range
+☐ 15m, 1h, 4h arrays built from 5m data
+☐ All timeframe counts logged before backtest
+☐ V75 Sniper still works at ~54% WR
+☐ V75 Swing now gets 1000+ candles
+☐ V75 Swing shows 1h: ~150+, 4h: ~35+ candles
+☐ V75 Reversal shows session move in logs
+☐ V75 Reversal funnel shows where trades pass
+☐ V10 backtest fetches R_10 data separately
+☐ V10 price range validated at ~5,000 level
+☐ Cache shared across strategies same pair/date
+☐ No data mismatch warnings
+
+CHART:
+☐ 1h timeframe button works on chart
+☐ 4h timeframe button works on chart
+☐ Each timeframe shows correct candle count
+☐ V10 chart shows correct price scale ~5,000

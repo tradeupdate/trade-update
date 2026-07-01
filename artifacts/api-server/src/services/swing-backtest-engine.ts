@@ -136,16 +136,44 @@ function writeCache(key: string, candles: SwingCandle[], dateFrom: number, dateT
 
 // ── Deriv fetch ───────────────────────────────────────────────────────────────
 
-function fetchFromDeriv(dateFrom: number, dateTo: number): Promise<SwingCandle[]> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      try { ws.terminate(); } catch { }
-      reject(new Error("Deriv historical fetch timed out after 30s"));
-    }, 30000);
+async function fetchFromDeriv(dateFrom: number, dateTo: number): Promise<SwingCandle[]> {
+  const CHUNK_SIZE = 5000;
+  const GRANULARITY = 300;
+  const MAX_CHUNKS = 10;
+  const all: SwingCandle[] = [];
+  let currentEnd = dateTo;
+  let chunks = 0;
+
+  while (currentEnd > dateFrom && chunks < MAX_CHUNKS) {
+    chunks++;
+    const chunk = await fetchOneChunk(SYMBOL, GRANULARITY, CHUNK_SIZE, currentEnd);
+    if (!chunk.length) break;
+    all.push(...chunk);
+    const earliest = Math.min(...chunk.map((c) => c.time));
+    currentEnd = earliest - GRANULARITY;
+    if (earliest <= dateFrom) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const filtered = all.filter((c) => c.time >= dateFrom && c.time <= dateTo);
+  const sorted = filtered.sort((a, b) => a.time - b.time);
+  return sorted.filter((c, i) => i === 0 || c.time !== sorted[i - 1]!.time);
+}
+
+function fetchOneChunk(
+  symbol: string,
+  granularity: number,
+  count: number,
+  endTime: number
+): Promise<SwingCandle[]> {
+  return new Promise((resolve) => {
     const ws = new WebSocket(WS_URL);
+    const timeout = setTimeout(() => { try { ws.terminate(); } catch {} resolve([]); }, 20000);
+
     ws.on("open", () => {
-      ws.send(JSON.stringify({ ticks_history: SYMBOL, style: "candles", granularity: 300, start: dateFrom, end: dateTo, count: 5000, req_id: 1 }));
+      ws.send(JSON.stringify({ ticks_history: symbol, style: "candles", granularity, count, end: endTime }));
     });
+
     ws.on("message", (data: Buffer) => {
       try {
         const msg = JSON.parse(data.toString());
@@ -153,16 +181,19 @@ function fetchFromDeriv(dateFrom: number, dateTo: number): Promise<SwingCandle[]
           clearTimeout(timeout);
           ws.close();
           resolve(msg.candles.map((c: Record<string, unknown>) => ({
-            time: Number(c.epoch), open: parseFloat(String(c.open)),
-            high: parseFloat(String(c.high)), low: parseFloat(String(c.low)), close: parseFloat(String(c.close)),
+            time: Number(c.epoch),
+            open: parseFloat(String(c.open)),
+            high: parseFloat(String(c.high)),
+            low: parseFloat(String(c.low)),
+            close: parseFloat(String(c.close)),
           })));
         } else if (msg.error) {
-          clearTimeout(timeout); ws.close();
-          reject(new Error(`Deriv error: ${String(msg.error?.message ?? msg.error)}`));
+          clearTimeout(timeout); ws.close(); resolve([]);
         }
-      } catch { }
+      } catch { /* skip */ }
     });
-    ws.on("error", (err) => { clearTimeout(timeout); reject(err); });
+
+    ws.on("error", () => { clearTimeout(timeout); try { ws.terminate(); } catch {} resolve([]); });
   });
 }
 

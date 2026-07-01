@@ -335,11 +335,26 @@ router.post("/adaptive-intelligence/toggle", async (req, res) => {
 });
 
 // Candles
-router.get("/candles", (req, res) => {
-  const tf = (req.query["timeframe"] as string) || "1m";
-  const count = Math.min(parseInt(String(req.query["count"] || "200")), 500);
-  const candles = derivService.getCandles(tf as "1m" | "5m" | "15m", count);
-  res.json({ candles, timeframe: tf });
+router.get("/candles", async (req, res) => {
+  const tf = (req.query["timeframe"] as string) || "5m";
+  const count = Math.min(parseInt(String(req.query["count"] || "200")), 1000);
+  const userId = (req as any).user?.id as number | undefined;
+
+  let pair = "R_75";
+  if (userId) {
+    try {
+      const user = await db.query.users.findFirst({ where: eq(usersTable.id, userId) });
+      pair = user?.activePair ?? "R_75";
+    } catch { /* fall back to R_75 */ }
+  }
+
+  const validTfs = ["1m", "5m", "15m", "1h", "4h"] as const;
+  type ValidTf = typeof validTfs[number];
+  const safeTf: ValidTf = validTfs.includes(tf as ValidTf) ? (tf as ValidTf) : "5m";
+
+  const candles = derivService.getCandlesForPair(pair, safeTf, count);
+  const totalStored = derivService.getCandleStoreSize(pair, safeTf);
+  res.json({ candles, timeframe: safeTf, pair, totalStored });
 });
 
 // Latest tick
