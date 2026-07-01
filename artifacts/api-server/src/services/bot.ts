@@ -10,6 +10,7 @@ import { derivService } from "./deriv.js";
 import type { DerivContract } from "./deriv.js";
 import { decrypt } from "../lib/crypto.js";
 import { score, type ScoreResult } from "./scoring.js";
+import { scoreV10, detectRangeCleanliness, detectV10TrendRisk } from "./scoring-v10.js";
 import {
   detectConsolidationRange, detectBreakout, scoreSwing, build4hCandles,
   type ConsolidationRange, type BreakoutResult,
@@ -57,6 +58,11 @@ export interface BotState {
   swingLastEval1hTime: number;
   // Reversal-specific state
   reversalCooldownUntil: number | null;
+  // V10 mean-reversion state
+  v10CooldownUntil: number | null;
+  v10CleanlinessScore: number | null;
+  v10TrendRisk: boolean;
+  v10Adx: number | null;
   // Risk management state
   capitalPreservationMode: boolean;
   hardStopped: boolean;
@@ -89,6 +95,10 @@ interface OpenTrade {
   reversalTrade?: boolean;
   reversalTargetPrice?: number;
   reversalIsPremium?: boolean;
+  // V10-specific (optional)
+  v10Trade?: boolean;
+  v10TargetPrice?: number;
+  v10OpenedAt?: number;
 }
 
 interface ScoreBreakdown {
@@ -325,6 +335,12 @@ class BotManager {
     // ── REVERSAL strategy routing ─────────────────────────────────────────
     if (strategy.type === "reversal") {
       await this.evaluateReversalSignal(userId, user, strategy, state, now, currentSession);
+      return;
+    }
+
+    // ── V10 MEAN REVERSION strategy routing ───────────────────────────────
+    if (strategy.type === "mean_reversion") {
+      await this.evaluateV10Signal(userId, user, strategy, state, now);
       return;
     }
 
@@ -728,6 +744,157 @@ class BotManager {
     logger.info({ userId, tradeId, dir: result.direction, score: result.total, rr: result.rr, premium: result.isPremium }, "Reversal trade opened");
   }
 
+  // ── V10 Range Scalper signal evaluation ──────────────────────────────────
+  private async evaluateV10Signal(
+    userId: string,
+    user: any,
+    strategy: any,
+    state: BotState,
+    now: number
+  ) {
+    const pair = user.activePair || "R_10";
+    const candles1m  = derivService.getCandlesForPair(pair, "1m", 50);
+    const candles5m  = derivService.getCandlesForPair(pair, "5m", 80);
+    const candles15m = derivService.getCandlesForPair(pair, "15m", 60);
+
+    if (candles5m.length < 30 || candles15m.length < 30) {
+      state.pauseReason = null;
+      this.broadcastToUser(userId, "scores", {
+        loading: true,
+        message: `Gathering V10 data... (${candles5m.length}/30 5m candles)`,
+        candlesLoaded: candles5m.length, candlesNeeded: 30,
+      });
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // V10-specific cooldown (3 minutes after last trade)
+    if (state.v10CooldownUntil && now < state.v10CooldownUntil) {
+      const remaining = state.v10CooldownUntil - now;
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      state.pauseReason = `V10 cooldown — ${mins}m ${secs}s remaining`;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+    if (state.v10CooldownUntil && now >= state.v10CooldownUntil) {
+      state.v10CooldownUntil = null;
+    }
+
+    const result = scoreV10(candles1m, candles5m, candles15m);
+
+    if (!result) {
+      state.currentScore = null;
+      state.pauseReason = "Gathering V10 signal data...";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    state.v10CleanlinessScore = result.cleanlinessScore;
+    state.v10TrendRisk = result.trendRisk;
+    state.v10Adx = result.adx;
+    state.currentScore = result.total;
+    state.scoreBreakdown = {
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
+      total: result.total,
+      direction: result.direction,
+    };
+
+    this.broadcastToUser(userId, "scores", {
+      total: result.total,
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
+      signal: result.direction,
+      direction: result.direction,
+      loading: false,
+      rsi5m: result.rsi,
+      cleanlinessScore: result.cleanlinessScore,
+      trendRisk: result.trendRisk,
+      adx: result.adx,
+      rejectionReason: result.rejectionReason,
+    });
+
+    const signalId = randomUUID();
+    const threshold = strategy.scoreThreshold ?? 18;
+    const action = result.direction !== "NONE" ? "executed" : "rejected";
+    await db.insert(signalLogTable).values({
+      id: signalId, userId, strategyId: strategy.id, timestamp: now,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
+      direction: result.direction, action, rejectionReason: result.rejectionReason,
+      ema9: null, ema21: null, rsi: result.rsi,
+      rangeContext: `range:${result.rangeLow.toFixed(2)}-${result.rangeHigh.toFixed(2)}|cleanliness:${result.cleanlinessScore}|adx:${result.adx.toFixed(1)}`,
+      sessionName: "24/7",
+      consolidationDetected: 0, spikeDetected: 0,
+    });
+
+    if (result.direction === "NONE") {
+      state.pauseReason = result.rejectionReason;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // Execute V10 trade
+    state.pauseReason = null;
+    const balance = user.accountBalance || 5000;
+    const riskPct = (strategy.maxRiskPercent ?? 1.0) / 100;
+    let stake = user.stakeSize != null && user.stakeSize > 0
+      ? user.stakeSize
+      : balance * riskPct;
+    if (state.recoveryModeActive) stake *= 0.5;
+    stake = Math.max(0.5, Math.min(1000, Math.round(stake * 100) / 100));
+
+    const entryPrice = result.entryPrice;
+    const tradeId = randomUUID();
+
+    await db.insert(tradesTable).values({
+      id: tradeId, userId, strategyId: strategy.id,
+      direction: result.direction, entryPrice, stake,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
+      isCopyTrade: 0, isPaper: user.tradingMode === "paper" ? 1 : 0, isDemo: user.demoMode === 1 ? 1 : 0,
+      symbol: pair, tradingMode: user.tradingMode || "paper", status: "open",
+      stopLoss: result.stopLoss, takeProfit1: result.takeProfit, takeProfit2: result.takeProfit,
+      recoveryModeActive: state.recoveryModeActive ? 1 : 0,
+      winStreakCautionActive: state.winStreakCautionActive ? 1 : 0,
+      sessionName: "24/7",
+      rangeContext: `range:${result.rangeLow.toFixed(2)}-${result.rangeHigh.toFixed(2)}|tp_mid_bb:${result.takeProfit.toFixed(4)}`,
+      openedAt: now,
+      rsiAtEntry: result.rsi, stochAtEntry: null, macdAtEntry: null,
+    });
+
+    state.openTrade = {
+      id: tradeId,
+      direction: result.direction,
+      entryPrice,
+      currentPrice: entryPrice,
+      stake,
+      pnl: 0,
+      stopLoss: result.stopLoss,
+      takeProfit1: result.takeProfit,
+      takeProfit2: result.takeProfit,
+      breakEvenMoved: false,
+      partialClosed: false,
+      momentumExtensionActive: false,
+      openedAt: now,
+      v10Trade: true,
+      v10TargetPrice: result.takeProfit,
+      v10OpenedAt: now,
+    };
+    state.lastTradeTime = now;
+    state.v10CooldownUntil = now + 3 * 60;
+    state.lastSignalScore = result.total;
+    state.lastSignalDirection = result.direction;
+
+    this.broadcastToUser(userId, "trade", { action: "opened", trade: state.openTrade });
+    this.broadcastBotEvent(userId, state);
+    this.logActivity(userId, `V10 ${result.direction} @ ${entryPrice.toFixed(4)} — SL ${result.stopLoss.toFixed(4)} — TP mid-BB ${result.takeProfit.toFixed(4)} — Score ${result.total}/25 — cleanliness ${result.cleanlinessScore}/10`, "info").catch(() => {});
+    logger.info({ userId, tradeId, dir: result.direction, score: result.total, pair }, "V10 trade opened");
+  }
+
   private calcATR(candles: Array<{ high: number; low: number; close: number }>, period = 14): number[] {
     const tr = candles.map((c, i) => {
       if (i === 0) return c.high - c.low;
@@ -934,6 +1101,42 @@ class BotManager {
         continue;
       }
 
+      // ── V10 trade monitoring ───────────────────────────────────────────
+      if (trade.v10Trade) {
+        const v10Price = derivService.getLatestTickForPair("R_10").price;
+        trade.currentPrice = v10Price;
+        const v10StopDist = Math.abs(trade.entryPrice - trade.stopLoss);
+        const v10Pips = trade.direction === "BUY" ? v10Price - trade.entryPrice : trade.entryPrice - v10Price;
+        if (state.tradingMode === "paper") {
+          trade.pnl = Math.round(trade.stake * (v10StopDist > 0 ? v10Pips / v10StopDist : 0) * 0.85 * 100) / 100;
+        } else {
+          trade.pnl = v10Pips;
+        }
+
+        // SL
+        if (trade.direction === "BUY" && v10Price <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+        if (trade.direction === "SELL" && v10Price >= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+
+        if (!shouldClose) {
+          // TP — single target: middle Bollinger Band
+          const tp = trade.v10TargetPrice ?? trade.takeProfit1;
+          if (trade.direction === "BUY" && v10Price >= tp) { shouldClose = true; closeReason = "tp2"; }
+          if (trade.direction === "SELL" && v10Price <= tp) { shouldClose = true; closeReason = "tp2"; }
+
+          // 15-minute time stop
+          if (elapsed > 15 * 60) { shouldClose = true; closeReason = "time_stop"; }
+        }
+
+        if (shouldClose) {
+          await this.closeTrade(userId, state, trade, v10Price, closeReason);
+          const state2 = this.bots.get(userId);
+          if (state2) {
+            state2.v10CooldownUntil = Math.floor(Date.now() / 1000) + 3 * 60;
+          }
+        }
+        continue;
+      }
+
       // ── Standard (sniper) trade monitoring ────────────────────────────
 
       // Stop loss
@@ -1121,6 +1324,7 @@ class BotManager {
         hourlyTradeReset: 0,
         swingConsolidation: null, swingBreakout: null, swingLastEval1hTime: 0,
         reversalCooldownUntil: null,
+        v10CooldownUntil: null, v10CleanlinessScore: null, v10TrendRisk: false, v10Adx: null,
         capitalPreservationMode: false, hardStopped: false, microStakeRecoveryMode: false,
       });
     }
@@ -1159,6 +1363,15 @@ class BotManager {
       this.broadcastBotEvent(userId, state);
       this.logActivity(userId, "Kill switch activated", "warning").catch(() => {});
       this.writeHeartbeat(userId).catch(() => {});
+    }
+  }
+
+  pauseBot(userId: string, reason: string) {
+    const state = this.bots.get(userId);
+    if (state) {
+      state.isRunning = false;
+      state.pauseReason = reason;
+      this.broadcastBotEvent(userId, state);
     }
   }
 

@@ -22,6 +22,7 @@ export const usersTable = pgTable("users", {
   autoCompoundEnabled: integer("auto_compound_enabled").default(1),
   adaptiveIntelligenceEnabled: integer("adaptive_intelligence_enabled").default(1),
   tradingMode: text("trading_mode").default("paper"),
+  activePair: text("active_pair").default("R_75"),
   createdAt: integer("created_at"),
   lastLogin: integer("last_login"),
   approvedAt: integer("approved_at"),

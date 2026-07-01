@@ -3,3 +3,4 @@
 - [Backtest engine design](backtest-engine-design.md) — WARMUP=175, partial exits, regime detection, feature importance, session filter
 - [Swing strategy architecture](swing-strategy-arch.md) — swing routing in bot.ts, scoring/backtest engines, Candle volume field requirement
 - [Pre-live safety architecture](prelive-safety-arch.md) — keep-alive, hard stop, capital preservation, conviction sizing, daily compound design
+- [V10 strategy architecture](v10-strategy-arch.md) — multi-pair deriv service, R_10 req_id ranges, scoring-v10.ts engine, pair switch API, V10 bot routing decisions

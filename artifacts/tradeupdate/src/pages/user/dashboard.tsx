@@ -107,6 +107,11 @@ export default function Dashboard() {
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [demoToggling, setDemoToggling] = useState(false);
 
+  // Pair selection
+  const [pairSwitching, setPairSwitching] = useState(false);
+  const [pairSwitchMsg, setPairSwitchMsg] = useState<string | null>(null);
+  const activePair = (dashboardData?.user as any)?.activePair ?? "R_75";
+
   // Activity log history (fetched on first open)
   const [activityHistory, setActivityHistory] = useState<Array<{message: string; level: string; createdAt: number}>>([]);
   const [activityLoaded, setActivityLoaded] = useState(false);
@@ -152,6 +157,31 @@ export default function Dashboard() {
       }
     } finally {
       setSettingsSaving(false);
+    }
+  };
+
+  const handleSwitchPair = async (pair: "R_75" | "R_10") => {
+    if (pair === activePair || pairSwitching) return;
+    setPairSwitching(true);
+    setPairSwitchMsg(null);
+    try {
+      const res = await fetch("/api/user/settings/pair", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ pair }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPairSwitchMsg(`Switched to ${pair}`);
+        queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
+        setTimeout(() => setPairSwitchMsg(null), 3000);
+      } else {
+        setPairSwitchMsg(data.error || "Switch failed");
+        setTimeout(() => setPairSwitchMsg(null), 4000);
+      }
+    } finally {
+      setPairSwitching(false);
     }
   };
 
@@ -548,7 +578,7 @@ export default function Dashboard() {
       <header className="h-[60px] flex items-center justify-between px-4 border-b border-border bg-card fixed top-0 w-full z-10">
         <Logo size="sm" />
         <div className="flex flex-col items-center">
-          <span className="text-xs text-text-secondary">V75 INDEX</span>
+          <span className="text-xs text-text-secondary">{activePair === "R_10" ? "V10 INDEX" : "V75 INDEX"}</span>
           <span className={`text-lg font-bold tabular-nums transition-colors duration-150 ${
             priceDir === "up" ? "text-primary" : priceDir === "down" ? "text-accent-red" : "text-foreground"
           }`}>
@@ -1373,13 +1403,66 @@ export default function Dashboard() {
                 <div className="text-sm">
                   {sse.connected ? (
                     <span className="text-primary">
-                      Live — V75 @ {price > 0 ? price.toFixed(2) : "loading..."}
+                      Live — {activePair === "R_10" ? "V10" : "V75"} @ {price > 0 ? price.toFixed(2) : "loading..."}
                     </span>
                   ) : (
                     <span className="text-accent-red">Disconnected — reconnecting...</span>
                   )}
                 </div>
               </div>
+            </Card>
+
+            {/* Trading Pair Selection */}
+            <Card className="p-4 bg-card border border-border rounded-xl">
+              <h3 className="font-bold mb-1">Trading Pair</h3>
+              <p className="text-[11px] text-text-secondary mb-3">Select which index your bot trades. Cannot switch while a trade is open.</p>
+              <div className="grid grid-cols-2 gap-3">
+                {/* V75 card */}
+                <button
+                  onClick={() => handleSwitchPair("R_75")}
+                  disabled={pairSwitching || activePair === "R_75"}
+                  className={`relative rounded-xl border-2 p-3 text-left transition-all ${
+                    activePair === "R_75"
+                      ? "border-primary bg-primary/10"
+                      : "border-border bg-background hover:border-primary/50"
+                  } disabled:opacity-70`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-bold text-text-secondary uppercase tracking-wide">V75</span>
+                    {activePair === "R_75" && <CheckCircle2 className="w-4 h-4 text-primary" />}
+                  </div>
+                  <div className="font-bold text-sm">Volatility 75</div>
+                  <div className="text-[10px] text-text-secondary mt-0.5">Session-based · High vol</div>
+                </button>
+
+                {/* V10 card */}
+                <button
+                  onClick={() => handleSwitchPair("R_10")}
+                  disabled={pairSwitching || activePair === "R_10"}
+                  className={`relative rounded-xl border-2 p-3 text-left transition-all ${
+                    activePair === "R_10"
+                      ? "border-primary bg-primary/10"
+                      : "border-border bg-background hover:border-primary/50"
+                  } disabled:opacity-70`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-bold text-text-secondary uppercase tracking-wide">V10</span>
+                    {activePair === "R_10" && <CheckCircle2 className="w-4 h-4 text-primary" />}
+                  </div>
+                  <div className="font-bold text-sm">Volatility 10</div>
+                  <div className="text-[10px] text-text-secondary mt-0.5">24/7 · Mean reversion</div>
+                </button>
+              </div>
+              {pairSwitching && (
+                <div className="flex items-center gap-2 mt-2 text-xs text-text-secondary">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Switching pair...
+                </div>
+              )}
+              {pairSwitchMsg && !pairSwitching && (
+                <div className={`mt-2 text-xs px-2 py-1 rounded-md ${pairSwitchMsg.startsWith("Switched") ? "bg-primary/10 text-primary" : "bg-accent-red/10 text-accent-red"}`}>
+                  {pairSwitchMsg}
+                </div>
+              )}
             </Card>
 
             {/* Bot Settings */}

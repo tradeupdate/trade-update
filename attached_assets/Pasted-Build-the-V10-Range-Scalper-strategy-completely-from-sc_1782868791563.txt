@@ -1,0 +1,724 @@
+Build the V10 Range Scalper strategy completely
+from scratch. This is a 24/7 mean-reversion 
+strategy designed for Volatility 10 Index, 
+completely independent from all V75 strategies.
+Also build the pair selection feature on the 
+user dashboard so users can choose which pair 
+their account trades.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — STRATEGY DATABASE RECORD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add a "pair" field to the strategies table:
+ALTER TABLE strategies ADD COLUMN pair TEXT 
+DEFAULT 'R_75'
+
+INSERT into strategies table:
+name: "V10 Range Scalper"
+description: "24/7 mean-reversion strategy for 
+Volatility 10 Index. Trades Bollinger Band 
+extremes with RSI confirmation. Tighter stops, 
+higher frequency, lower individual risk per 
+trade. Includes trend detection filter to 
+pause during rare trending periods."
+type: "mean_reversion"
+pair: "R_10"
+status: "active"
+entry_timeframe: "1m"
+signal_timeframe: "5m"
+trend_timeframe: "15m"
+sessions_enabled: ["all_hours"]
+score_threshold: 18
+max_trades_day: 15
+max_trades_hour: 3
+consecutive_loss_stop: 4
+max_risk_percent: 0.75
+stop_multiplier: 0.8
+tp1_multiplier: 1.0
+tp2_multiplier: 0
+counter_trend_enabled: 0
+first_candle_rule: 0
+spike_filter_enabled: 1
+spike_filter_multiplier: 3.0
+momentum_extension_enabled: 0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — ADD USER PAIR SELECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ADD to users table:
+ALTER TABLE users ADD COLUMN active_pair TEXT 
+DEFAULT 'R_75'
+
+UPDATE the strategy selection flow on user 
+dashboard:
+
+In Settings tab, add a new section above 
+"Trading Profile":
+
+PAIR SELECTION:
+"Choose Your Trading Pair"
+
+Two cards side by side:
+
+CARD 1 — Volatility 75
+Icon: lightning bolt
+"V75 — Volatility 75 Index"
+"Fast-moving, trending market. 
+Higher volatility, larger moves."
+Badge: "3 strategies available"
+If selected: teal border
+
+CARD 2 — Volatility 10  
+Icon: wave/calm icon
+"V10 — Volatility 10 Index"
+"Calmer, range-bound market.
+Tighter moves, higher frequency."
+Badge: "1 strategy available"
+If selected: teal border
+
+User taps a card to select pair.
+On selection: 
+PATCH /api/user/settings/pair
+Body: { pair: 'R_75' | 'R_10' }
+
+Backend:
+1. Validate user has no open trade
+   (cannot switch pair mid-trade)
+2. If open trade exists: show error
+   "Cannot switch pairs while a trade is open.
+   Wait for current trade to close."
+3. Update users.active_pair
+4. Disconnect current Deriv tick subscription
+5. Subscribe to new pair's tick stream
+6. Reset chart data for new pair
+7. If switching to R_10: show strategy selector
+   showing only "V10 Range Scalper" 
+   (only one strategy for this pair currently)
+8. If switching to R_75: show strategy selector
+   showing "V75 Sniper", "V75 Swing", 
+   "V75 Reversal" as before
+9. Update strategy_id to match new pair's 
+   default strategy
+10. Broadcast pair change via SSE to refresh 
+    dashboard
+
+After pair switch, show confirmation:
+"Switched to V10 — Volatility 10 Index
+Strategy: V10 Range Scalper
+Bot will need to be re-enabled to start trading."
+
+Bot automatically pauses on pair switch.
+User must manually re-enable.
+
+DASHBOARD HEADER UPDATE:
+Show active pair next to price:
+"V75  39,245.50 ↑" or "V10  8,432.15 ↑"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — V10 DERIV CONNECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Update DerivService to support multiple pairs
+per user (only one active at a time).
+
+V10 symbol: "R_10"
+V10 typical price range: 7,000 - 12,000
+(verify this range when first connecting,
+log actual values seen)
+
+Subscribe based on user's active_pair:
+function subscribeToActivePair(
+  userId: string, 
+  pair: string
+) {
+  const symbol = pair // 'R_75' or 'R_10'
+  
+  ws.send(JSON.stringify({
+    ticks: symbol,
+    subscribe: 1
+  }))
+  
+  ws.send(JSON.stringify({
+    ticks_history: symbol,
+    style: "candles",
+    granularity: 60,
+    count: 200,
+    end: "latest",
+    subscribe: 1
+  }))
+  
+  console.log(`Subscribed to ${symbol} for 
+    user ${userId}`)
+}
+
+PRICE VALIDATION per pair:
+function validatePrice(price: number, pair: string): boolean {
+  if (pair === 'R_75') {
+    return price >= 20000 && price <= 80000
+  }
+  if (pair === 'R_10') {
+    return price >= 3000 && price <= 20000
+    // Wide range until we confirm actual values
+  }
+  return false
+}
+
+On first V10 connection, log actual price range:
+console.log(`V10 first 10 ticks:`, 
+  recentTicks.slice(0,10))
+console.log(`V10 price range observed: 
+  ${Math.min(...prices)} - ${Math.max(...prices)}`)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — PAYOUT RATE DETECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Replace hardcoded 0.85 payout assumption
+with real-time detection via proposal request.
+
+async function getActualPayoutRate(
+  derivService: DerivService,
+  pair: string,
+  stake: number
+): Promise<number> {
+
+  try {
+    const proposal = await derivService.send({
+      proposal: 1,
+      amount: stake,
+      basis: "stake",
+      contract_type: "CALL",
+      currency: "USD",
+      duration: 5,
+      duration_unit: "m",
+      symbol: pair
+    })
+
+    const payout = proposal.proposal.payout
+    const askPrice = proposal.proposal.ask_price
+    const payoutRate = (payout - askPrice) / askPrice
+
+    console.log(`Actual payout rate for ${pair}:
+      Stake: $${stake}
+      Payout: $${payout}
+      Ask price: $${askPrice}
+      Rate: ${(payoutRate*100).toFixed(2)}%`)
+
+    return payoutRate
+
+  } catch (error) {
+    console.error(`Failed to get payout rate, 
+      using default 0.85:`, error)
+    return 0.85 // Fallback
+  }
+}
+
+Cache the payout rate per pair, refresh every
+30 minutes since it can drift slightly:
+
+const payoutCache: { [pair: string]: 
+  { rate: number, updatedAt: number } } = {}
+
+async function getCachedPayoutRate(
+  derivService: DerivService,
+  pair: string,
+  stake: number
+): Promise<number> {
+
+  const cached = payoutCache[pair]
+  const CACHE_DURATION = 30 * 60 * 1000
+
+  if (cached && 
+      Date.now() - cached.updatedAt < CACHE_DURATION) {
+    return cached.rate
+  }
+
+  const rate = await getActualPayoutRate(
+    derivService, pair, stake
+  )
+  
+  payoutCache[pair] = { 
+    rate, 
+    updatedAt: Date.now() 
+  }
+
+  return rate
+}
+
+Use this real rate in all P&L calculations
+for V10 trades instead of hardcoded 0.85.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — RANGE CLEANLINESS DETECTOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Replaces traditional session filtering for V10.
+Runs continuously 24/7 checking if current 
+conditions favor mean-reversion trading.
+
+function detectRangeCleanliness(
+  candles5m: Candle[]
+): RangeQualityResult {
+
+  const last30 = candles5m.slice(-30)
+  
+  // Calculate the range
+  const highs = last30.map(c => c.high)
+  const lows = last30.map(c => c.low)
+  const rangeHigh = Math.max(...highs)
+  const rangeLow = Math.min(...lows)
+  const rangeSize = rangeHigh - rangeLow
+  const midpoint = (rangeHigh + rangeLow) / 2
+
+  // Count how many candles respected the range
+  // (didn't break out significantly)
+  const candlesInRange = last30.filter(c =>
+    c.high <= rangeHigh * 1.002 &&
+    c.low >= rangeLow * 0.998
+  ).length
+
+  const rangeRespect = candlesInRange / 30
+
+  // Calculate noise — how choppy is price action
+  // within the range (lots of small wicks = noisy)
+  let totalWickSize = 0
+  let totalBodySize = 0
+  
+  last30.forEach(c => {
+    const body = Math.abs(c.close - c.open)
+    const wick = (c.high - c.low) - body
+    totalWickSize += wick
+    totalBodySize += body
+  })
+
+  const wickToBodyRatio = totalWickSize / 
+    (totalBodySize || 1)
+
+  // Calculate how many times price touched 
+  // the band edges (more touches = cleaner range)
+  const bb = calculateBB(last30, 20, 2.0)
+  const upperTouches = last30.filter(c => 
+    c.high >= bb.upper * 0.998
+  ).length
+  const lowerTouches = last30.filter(c =>
+    c.low <= bb.lower * 1.002
+  ).length
+
+  // CLEANLINESS SCORE (0-10)
+  let cleanlinessScore = 0
+
+  if (rangeRespect >= 0.85) cleanlinessScore += 4
+  else if (rangeRespect >= 0.70) cleanlinessScore += 2
+
+  if (wickToBodyRatio < 1.5) cleanlinessScore += 3
+  else if (wickToBodyRatio < 2.5) cleanlinessScore += 1
+
+  if (upperTouches >= 1 && lowerTouches >= 1) 
+    cleanlinessScore += 3
+  else if (upperTouches >= 1 || lowerTouches >= 1)
+    cleanlinessScore += 1
+
+  console.log(`Range cleanliness check:
+    Range respect: ${(rangeRespect*100).toFixed(0)}%
+    Wick/body ratio: ${wickToBodyRatio.toFixed(2)}
+    Upper touches: ${upperTouches}
+    Lower touches: ${lowerTouches}
+    Cleanliness score: ${cleanlinessScore}/10`)
+
+  return {
+    cleanlinessScore,
+    rangeHigh,
+    rangeLow,
+    midpoint,
+    tradeable: cleanlinessScore >= 6
+  }
+}
+
+If tradeable === false:
+Return { signal: 'NONE', 
+  reason: `Range too noisy — cleanliness 
+  ${cleanlinessScore}/10, need 6+` }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — TREND DETECTION SAFETY FILTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Critical safety filter. Pauses all mean-reversion
+trades if V10 starts trending instead of ranging.
+
+function detectV10TrendRisk(
+  candles15m: Candle[]
+): TrendRiskResult {
+
+  const adx = calculateADX(candles15m, 14)
+  const last10 = candles15m.slice(-10)
+  
+  // Directional consistency check
+  const bullish = last10.filter(
+    c => c.close > c.open
+  ).length
+  const bearish = 10 - bullish
+
+  const strongDirectional = 
+    bullish >= 8 || bearish >= 8
+
+  const trendRisk = adx > 25 || strongDirectional
+
+  console.log(`V10 trend risk check:
+    ADX: ${adx.toFixed(1)}
+    Directional candles: ${Math.max(bullish, bearish)}/10
+    TREND RISK: ${trendRisk}`)
+
+  return {
+    adx,
+    trendRisk,
+    safe: adx < 20 && !strongDirectional
+  }
+}
+
+Run this check every 15 minutes (on every new
+15m candle close), 24/7.
+
+If trendRisk === true:
+  Pause all new V10 entries
+  Show status: "⚠️ V10 trending — mean-reversion 
+  paused until range resumes"
+  Continue checking every 15 minutes
+  Resume only when ADX drops below 20
+
+If an open trade exists when trend risk activates:
+  Do NOT close existing trade automatically
+  Let existing stop/TP rules manage it
+  Just block NEW entries
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — V10 SCORING ENGINE (0-25)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+COMPONENT 1 — RANGE CLEANLINESS (0-10)
+Already calculated in Part 5.
+Directly used as component score.
+score = cleanlinessScore (0-10)
+Hard rule: if < 6, return NONE.
+
+COMPONENT 2 — BB EXTREME + RSI CONFLUENCE (0-10)
+
+function scoreV10Entry(
+  candles5m: Candle[],
+  direction: 'BUY' | 'SELL'
+): number {
+
+  const bb = calculateBB(candles5m, 20, 2.0)
+  const rsi = calculateRSI(candles5m, 14)
+  const currentPrice = 
+    candles5m[candles5m.length-1].close
+  const stoch = calculateStochastic(candles5m, 5, 3, 3)
+
+  let score = 0
+
+  if (direction === 'BUY') {
+    // Price at or below lower band
+    const atLowerBand = currentPrice <= bb.lower * 1.001
+    const belowLowerBand = currentPrice < bb.lower
+
+    if (belowLowerBand) score += 4
+    else if (atLowerBand) score += 3
+
+    // RSI oversold
+    if (rsi < 25) score += 3
+    else if (rsi < 30) score += 2
+    else if (rsi < 35) score += 1
+
+    // Stochastic confirmation
+    if (stoch.k < 20 && stoch.k > stoch.d) score += 3
+    else if (stoch.k < 25) score += 1
+  }
+
+  if (direction === 'SELL') {
+    const atUpperBand = currentPrice >= bb.upper * 0.999
+    const aboveUpperBand = currentPrice > bb.upper
+
+    if (aboveUpperBand) score += 4
+    else if (atUpperBand) score += 3
+
+    if (rsi > 75) score += 3
+    else if (rsi > 70) score += 2
+    else if (rsi > 65) score += 1
+
+    if (stoch.k > 80 && stoch.k < stoch.d) score += 3
+    else if (stoch.k > 75) score += 1
+  }
+
+  return Math.min(score, 10)
+}
+
+COMPONENT 3 — REJECTION CONFIRMATION (0-5)
+
+function scoreRejection(
+  candles1m: Candle[],
+  direction: 'BUY' | 'SELL'
+): number {
+
+  const last = candles1m[candles1m.length-1]
+  const body = Math.abs(last.close - last.open)
+  const range = last.high - last.low
+
+  if (direction === 'BUY') {
+    const lowerWick = last.open < last.close ?
+      last.open - last.low : last.close - last.low
+    const wickRatio = lowerWick / (range || 1)
+
+    if (wickRatio > 0.6 && last.close > last.open) 
+      return 5 // Strong rejection wick + green close
+    if (wickRatio > 0.4) return 3
+    if (last.close > last.open) return 2
+    return 0
+  }
+
+  if (direction === 'SELL') {
+    const upperWick = last.close < last.open ?
+      last.open - last.high : last.close - last.high
+    const wickRatio = Math.abs(upperWick) / (range || 1)
+
+    if (wickRatio > 0.6 && last.close < last.open)
+      return 5
+    if (wickRatio > 0.4) return 3
+    if (last.close < last.open) return 2
+    return 0
+  }
+
+  return 0
+}
+
+TOTAL V10 SCORE = C1 + C2 + C3 (max 25)
+THRESHOLD = 18/25
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — SIGNAL GENERATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function generateV10Signal(
+  candles1m, candles5m, candles15m
+): SignalResult {
+
+  // Step 1: Trend risk check (safety first)
+  const trendRisk = detectV10TrendRisk(candles15m)
+  if (trendRisk.trendRisk) {
+    return { 
+      signal: 'NONE', 
+      reason: 'V10 trending — mean reversion paused' 
+    }
+  }
+
+  // Step 2: Range cleanliness check
+  const rangeQuality = detectRangeCleanliness(candles5m)
+  if (!rangeQuality.tradeable) {
+    return { 
+      signal: 'NONE', 
+      reason: `Range too noisy: 
+        ${rangeQuality.cleanlinessScore}/10` 
+    }
+  }
+
+  const c1 = rangeQuality.cleanlinessScore
+
+  // Step 3: Try BUY (price at lower band)
+  const buyC2 = scoreV10Entry(candles5m, 'BUY')
+  if (buyC2 >= 6) {
+    const buyC3 = scoreRejection(candles1m, 'BUY')
+    const buyTotal = c1 + buyC2 + buyC3
+
+    if (buyTotal >= 18) {
+      return {
+        signal: 'BUY',
+        total: buyTotal,
+        c1, c2: buyC2, c3: buyC3,
+        reason: 'Range extreme + RSI oversold + rejection'
+      }
+    }
+  }
+
+  // Step 4: Try SELL (price at upper band)
+  const sellC2 = scoreV10Entry(candles5m, 'SELL')
+  if (sellC2 >= 6) {
+    const sellC3 = scoreRejection(candles1m, 'SELL')
+    const sellTotal = c1 + sellC2 + sellC3
+
+    if (sellTotal >= 18) {
+      return {
+        signal: 'SELL',
+        total: sellTotal,
+        c1, c2: sellC2, c3: sellC3,
+        reason: 'Range extreme + RSI overbought + rejection'
+      }
+    }
+  }
+
+  return { signal: 'NONE', reason: 'No qualifying setup' }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 9 — V10 RISK AND STOP MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RISK PER TRADE: 0.75% (lower than V75 strategies
+since this trades more frequently)
+
+STOP LOSS:
+stopDistance = ATR(14) on 5m × 0.8
+(tighter than V75 since V10 ranges are smaller)
+Minimum: 15 pips
+Maximum: 50 pips
+
+If calculated stop > 50 pips: reject trade
+(if stop needs to be this wide, range 
+cleanliness check likely should have caught it)
+
+TAKE PROFIT:
+Single target: middle Bollinger Band
+(same approach as V75 Reversal — mean reversion
+targets the mean, not a multiplier)
+
+Minimum TP distance: 10 pips
+If middle BB is closer than 10 pips: reject
+R:R minimum: 1.2:1 
+(lower threshold than trend strategies since 
+win rate should be higher on mean reversion)
+
+TIME STOP: 15 minutes
+(V10 mean reversion should resolve quickly
+given tighter ranges)
+
+NO BREAK EVEN MECHANIC for V10
+(trades are short duration, single target,
+break even adds unnecessary complexity for 
+quick scalp trades)
+
+NO PARTIAL CLOSE for V10
+(single TP target, full position closes at once)
+
+COOLDOWN: 3 minutes between trades
+(shorter than V75 since V10 is calmer and 
+allows faster re-engagement)
+
+DAILY LIMITS:
+Max 15 trades per day
+Max 3 trades per hour
+Consecutive loss stop: 4 losses
+(higher tolerance than V75 since individual
+risk per trade is lower at 0.75%)
+
+DAILY LOSS CAP: 6% of starting balance
+(slightly higher than V75's 5% since V10 
+trades are smaller individually)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 10 — V10 BACKTEST CONFIGURATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create v10test100 account:
+username: "v10test100"
+password: "V10Test100!"
+balance: $5,000
+profile: safe
+strategy: V10 Range Scalper
+active_pair: "R_10"
+mode: paper
+
+IMPORTANT: Fetch real V10 historical data
+from Deriv using symbol "R_10" not "R_75"
+
+Run backtest:
+Account: v10test100
+Period: December 31 2025 to May 30 2026
+(same period as other strategies for comparison)
+
+Expected characteristics:
+Trades: 150-400 over 5 months
+(much higher frequency due to 24/7 + 
+tighter ranges + shorter cooldown)
+Average duration: 8-15 minutes
+Win rate target: 60-70%
+(mean reversion at clean extremes should
+have higher win rate than trend strategies)
+Average win: smaller individual size
+Average loss: smaller individual size
+(both smaller due to tighter stops)
+Profit factor target: 1.3+
+
+Log every:
+Trend risk check result (every 15m)
+Range cleanliness score (every 5m)
+BB/RSI/Stoch confluence score
+Rejection confirmation
+Entry and exit with reason
+Actual payout rate detected from Deriv
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 11 — DASHBOARD DISPLAY UPDATES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CHART TAB updates for V10:
+Show "Range Cleanliness" gauge instead of 
+session cards:
+Circular gauge 0-10
+Green 6-10: "Clean range — tradeable"
+Yellow 4-6: "Borderline — selective"
+Red 0-4: "Noisy — paused"
+
+Show "Trend Risk" status badge:
+Green: "✓ Mean-reversion safe — ADX [X]"
+Red: "⚠ Trend risk — paused — ADX [X]"
+
+Score panel shows 3 components instead of
+the V75 strategies' components:
+Range Quality | BB/RSI Confluence | Rejection
+Total: X/25
+
+HOME TAB updates:
+Show active pair prominently:
+"Trading: V10 — Volatility 10 Index"
+Trades today counter shows higher typical 
+numbers: "Trades today: 7/15"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+☐ Pair selection cards appear in Settings
+☐ Switching pairs blocked while trade open
+☐ Switching pairs disconnects/reconnects 
+  correct Deriv symbol
+☐ Bot auto-pauses after pair switch
+☐ V10 connects to symbol "R_10" correctly
+☐ V10 price range validated and logged
+☐ Payout rate fetched from real Deriv proposal
+☐ Payout rate cached and refreshed every 30min
+☐ Range cleanliness calculates every 5m
+☐ Trend risk filter checks every 15m
+☐ Trend risk pauses new entries when triggered
+☐ Existing trades unaffected by trend risk pause
+☐ Score totals 0-25 with correct threshold 18
+☐ Stop loss 15-50 pip range enforced
+☐ Single TP target at middle BB
+☐ No break even or partial close logic runs
+☐ 3 minute cooldown enforced
+☐ 15 trades/day, 3/hour limits enforced
+☐ Backtest uses real R_10 historical data
+☐ Backtest produces 150-400 trades
+☐ Win rate 60%+ in backtest
+☐ Chart tab shows range cleanliness gauge
+☐ Chart tab shows trend risk status
+☐ Dashboard header shows correct active pair
+
+After backtest completes, compare V10 results
+against V75 Sniper, Swing, and Reversal using
+the same expected daily value formula:
+(win rate × avg win - loss rate × avg loss) 
+× trades per day
+
+Report all four strategies side by side and 
+I will give final recommendation on which 
+goes live first.

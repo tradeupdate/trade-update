@@ -55,6 +55,10 @@ router.get("/dashboard", async (req, res) => {
         strategyId: user.strategyId, autoCompoundEnabled: user.autoCompoundEnabled === 1,
         adaptiveIntelligenceEnabled: user.adaptiveIntelligenceEnabled === 1,
         copyTradingEnabled: user.copyTradingEnabled === 1,
+        activePair: user.activePair ?? "R_75",
+        demoMode: user.demoMode === 1,
+        stakeSize: user.stakeSize,
+        maxDailyLoss: user.maxDailyLoss,
       },
       botStatus: {
         isRunning: bot.isRunning, killSwitchActive: bot.killSwitchActive,
@@ -572,6 +576,35 @@ router.patch("/settings", async (req, res) => {
     res.json({ message: "Settings updated", ...update });
   } catch (err) {
     logger.error({ err }, "Update settings error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PATCH active pair (V75 / V10)
+router.patch("/settings/pair", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const { pair } = req.body;
+    const ALLOWED = ["R_75", "R_10"];
+    if (!ALLOWED.includes(pair)) { res.status(400).json({ error: "pair must be R_75 or R_10" }); return; }
+
+    // Require no open trade
+    const openTrades = await db.select().from(tradesTable)
+      .where(and(eq(tradesTable.userId, userId), eq(tradesTable.status, "open")));
+    if (openTrades.length > 0) { res.status(409).json({ error: "Cannot switch pair while a trade is open" }); return; }
+
+    await db.update(usersTable).set({ activePair: pair }).where(eq(usersTable.id, userId));
+
+    // Pause bot on pair switch
+    const bot = botManager.getOrCreate(userId, "paper");
+    if (bot.isRunning) {
+      botManager.pauseBot(userId, `Pair switched to ${pair} — tap Resume`);
+    }
+
+    logger.info({ userId, pair }, "Active pair switched");
+    res.json({ message: `Active pair switched to ${pair}`, pair });
+  } catch (err) {
+    logger.error({ err }, "Pair switch error");
     res.status(500).json({ error: "Server error" });
   }
 });

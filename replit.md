@@ -17,6 +17,7 @@ Institutional-grade algorithmic trading platform for the Deriv Volatility 75 (V7
 - **User (Sniper)**: `Clean10test` / `Test1234!`
 - **User (Swing)**: `swingtest100` / `Swing100!`
 - **User (Reversal)**: `reversaltest100` / `Reversal100!`
+- **User (V10 Range Scalper)**: `v10test100` / `V10Test100!`
 
 ## Stack
 
