@@ -14,11 +14,11 @@ const CACHE_DIR = path.join(process.cwd(), "data", "candle-cache");
 const SYMBOL = "R_75";
 const WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=1089";
 
-const MIN_STOP_PIPS = 20;
-const MAX_STOP_PIPS = 80;
-const MIN_TP_PIPS   = 30;
-const MIN_RR        = 1.5;
-const SESSION_MOVE_THRESHOLD = 200;
+const MIN_STOP_PIPS = 10;
+const MAX_STOP_PIPS = 150;
+const MIN_TP_PIPS   = 10;
+const MIN_RR        = 0.8;
+const SESSION_MOVE_THRESHOLD = 50;
 const TIME_STOP_BARS_5M = 4;  // 4 × 5m = 20 minutes
 const COOLDOWN_BARS_5M  = 6;  // 6 × 5m = 30 minutes
 const MAX_TRADES_DAY    = 5;
@@ -259,28 +259,31 @@ function calcRSIArray(candles: BTCandle[], period = 14): number[] {
   return result;
 }
 
-function detectDivergenceBT(candles: BTCandle[], lookback = 10): { bullish: boolean; bearish: boolean; currentRsi: number } {
+function detectDivergenceBT(candles: BTCandle[], lookback = 14): { bullish: boolean; bearish: boolean; currentRsi: number } {
   if (candles.length < lookback + 14) return { bullish: false, bearish: false, currentRsi: 50 };
-  const recent = candles.slice(-lookback);
-  const rsiValues = calcRSIArray(candles as Candle[], 14).slice(-lookback);
-  const closes = recent.map(c => c.close);
-  let priceHighIdx = 0, priceLowIdx = 0, rsiHighIdx = 0, rsiLowIdx = 0;
-  for (let i = 1; i < recent.length - 1; i++) {
-    if (closes[i]! > closes[priceHighIdx]!) priceHighIdx = i;
-    if (closes[i]! < closes[priceLowIdx]!) priceLowIdx = i;
-    if (rsiValues[i]! > rsiValues[rsiHighIdx]!) rsiHighIdx = i;
-    if (rsiValues[i]! < rsiValues[rsiLowIdx]!) rsiLowIdx = i;
-  }
-  const lastPH = closes[priceHighIdx]!, prevPH = closes.slice(0, priceHighIdx).length ? Math.max(...closes.slice(0, priceHighIdx)) : lastPH;
-  const lastRH = rsiValues[rsiHighIdx]!, prevRH = rsiValues.slice(0, rsiHighIdx).length ? Math.max(...rsiValues.slice(0, rsiHighIdx)) : lastRH;
-  const lastPL = closes[priceLowIdx]!, prevPL = closes.slice(0, priceLowIdx).length ? Math.min(...closes.slice(0, priceLowIdx)) : lastPL;
-  const lastRL = rsiValues[rsiLowIdx]!, prevRL = rsiValues.slice(0, rsiLowIdx).length ? Math.min(...rsiValues.slice(0, rsiLowIdx)) : lastRL;
-  const currentRsi = rsiValues[rsiValues.length - 1]!;
-  return {
-    bearish: lastPH > prevPH && lastRH < prevRH && currentRsi > 65,
-    bullish: lastPL < prevPL && lastRL > prevRL && currentRsi < 35,
-    currentRsi,
-  };
+  const rsiAll = calcRSIArray(candles as Candle[], 14);
+  if (rsiAll.length < lookback + 1) return { bullish: false, bearish: false, currentRsi: 50 };
+
+  const currentClose = candles[candles.length - 1]!.close;
+  const currentRsi   = rsiAll[rsiAll.length - 1]!;
+
+  // Look at the prior lookback bars (not including current)
+  const priorCloses = candles.slice(-(lookback + 1), -1).map(c => c.close);
+  const priorRsi    = rsiAll.slice(-(lookback + 1), -1);
+
+  // Bullish divergence: current price ≤ prior low, but current RSI > RSI at that prior low
+  const priorLow    = Math.min(...priorCloses);
+  const priorLowIdx = priorCloses.indexOf(priorLow);
+  const rsiAtLow    = priorRsi[priorLowIdx] ?? currentRsi;
+  const bullish     = currentClose <= priorLow * 1.002 && currentRsi > rsiAtLow + 2;
+
+  // Bearish divergence: current price ≥ prior high, but current RSI < RSI at that prior high
+  const priorHigh    = Math.max(...priorCloses);
+  const priorHighIdx = priorCloses.indexOf(priorHigh);
+  const rsiAtHigh    = priorRsi[priorHighIdx] ?? currentRsi;
+  const bearish      = currentClose >= priorHigh * 0.998 && currentRsi < rsiAtHigh - 2;
+
+  return { bullish, bearish, currentRsi };
 }
 
 function calcBBBT(candles: BTCandle[], period = 20, sigma = 2.0): { upper: number; middle: number; lower: number } {
@@ -295,15 +298,15 @@ function calcBBBT(candles: BTCandle[], period = 20, sigma = 2.0): { upper: numbe
 }
 
 function scoreSessionExhaustionBT(movePips: number, moveDir: "UP" | "DOWN" | "NONE", direction: "BUY" | "SELL"): number {
-  if (direction === "BUY" && moveDir !== "DOWN") return 0;
-  if (direction === "SELL" && moveDir !== "UP") return 0;
-  if (movePips >= 600) return 10;
-  if (movePips >= 500) return 9;
-  if (movePips >= 450) return 8;
-  if (movePips >= 400) return 7;
-  if (movePips >= 375) return 6;
-  if (movePips >= 350) return 5;
-  return 0;
+  const aligned = (direction === "BUY" && moveDir === "DOWN") || (direction === "SELL" && moveDir === "UP");
+  const base = aligned ? 0 : -2;
+  if (movePips >= 400) return Math.max(0, 10 + base);
+  if (movePips >= 300) return Math.max(0, 8 + base);
+  if (movePips >= 200) return Math.max(0, 6 + base);
+  if (movePips >= 150) return Math.max(0, 5 + base);
+  if (movePips >= 100) return Math.max(0, 4 + base);
+  if (movePips >= 50)  return Math.max(0, 2 + base);
+  return 1;
 }
 
 function scoreDivBT(d5: { bullish: boolean; bearish: boolean; currentRsi: number }, d15: { bullish: boolean; bearish: boolean; currentRsi: number }, dir: "BUY" | "SELL"): number {
@@ -398,7 +401,7 @@ export async function runReversalBacktest(
   // Warmup: need enough bars for indicators (RSI 14 + BB 20 + divergence lookback)
   const WARMUP = 50;
 
-  const threshold = config.scoreThreshold ?? 20;
+  const threshold = config.scoreThreshold ?? 8;
   const maxRiskPct = (config.maxRiskPercent ?? 1.0) / 100;
   const maxTradesDay = config.maxTradesDay ?? MAX_TRADES_DAY;
   const consLossStop = config.consecutiveLossStop ?? 3;
@@ -571,8 +574,8 @@ export async function runReversalBacktest(
       console.log(`[REV-DBG] Div i=${i} 5m.bull=${div5m.bullish} 5m.bear=${div5m.bearish} 5m.rsi=${div5m.currentRsi.toFixed(1)} 15m.bull=${div15m.bullish} 15m.bear=${div15m.bearish}`);
       divergenceDebugLogs++;
     }
-    const buyRev  = (div5m.bullish || div15m.bullish) && div5m.currentRsi < 30;
-    const sellRev = (div5m.bearish || div15m.bearish) && div5m.currentRsi > 70;
+    const buyRev  = (div5m.bullish || div15m.bullish) && div5m.currentRsi < 45;
+    const sellRev = (div5m.bearish || div15m.bearish) && div5m.currentRsi > 55;
     if (!buyRev && !sellRev) { rej.noDivergence++; continue; }
     const direction: "BUY" | "SELL" = buyRev ? "BUY" : "SELL";
     const isBuy = direction === "BUY";
@@ -585,7 +588,6 @@ export async function runReversalBacktest(
     const above25 = candle.close > bb25.upper;
     const below25 = candle.close < bb25.lower;
     const hasBreachedBB = isBuy ? belowLower : aboveUpper;
-    if (!hasBreachedBB) { rej.noBBBreach++; continue; }
     const isPremium = isBuy ? below25 : above25;
 
     // ── 1m confirmation — use last 5m bar body as proxy in backtest ───────
@@ -593,7 +595,7 @@ export async function runReversalBacktest(
     const bodyRatio = Math.abs(candle.close - candle.open) / Math.max(0.0001, candle.high - candle.low);
     const abovePrevMid = isBuy ? candle.close > (prevCandle.high + prevCandle.low) / 2 : candle.close < (prevCandle.high + prevCandle.low) / 2;
     const confirmedDirection = isBuy ? candle.close > candle.open : candle.close < candle.open;
-    if (!confirmedDirection || bodyRatio < 0.4 || !abovePrevMid) continue;
+    if (!confirmedDirection || bodyRatio < 0.2) continue;
 
     // ── Score ─────────────────────────────────────────────────────────────
     const c1 = scoreSessionExhaustionBT(movePips, moveDir, direction);

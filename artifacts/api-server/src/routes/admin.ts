@@ -429,7 +429,7 @@ router.post("/backtest/run", async (req, res) => {
 
     if (strategy.type === "swing") {
       const swingConfig = {
-        scoreThreshold: strategy.scoreThreshold ?? 20,
+        scoreThreshold: strategy.scoreThreshold ?? 8,
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         stopMultiplier: strategy.stopMultiplier ?? 2.0,
         tp1Multiplier: strategy.tp1Multiplier ?? 2.0,
@@ -440,7 +440,7 @@ router.post("/backtest/run", async (req, res) => {
       result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000);
     } else if (strategy.type === "mean_reversion") {
       const v10Config = {
-        scoreThreshold: scoreThresholdOverride != null ? Number(scoreThresholdOverride) : (strategy.scoreThreshold ?? 18),
+        scoreThreshold: scoreThresholdOverride != null ? Number(scoreThresholdOverride) : (strategy.scoreThreshold ?? 8),
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         maxTradesDay: strategy.maxTradesDay ?? 4,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
@@ -448,7 +448,7 @@ router.post("/backtest/run", async (req, res) => {
       result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000);
     } else if (strategy.type === "reversal") {
       const reversalConfig = {
-        scoreThreshold: strategy.scoreThreshold ?? 20,
+        scoreThreshold: Math.min(strategy.scoreThreshold ?? 10, 10),
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         maxTradesDay: strategy.maxTradesDay ?? 5,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
@@ -566,7 +566,7 @@ router.post("/backtest/stream", async (req, res) => {
 
     if (strategy.type === "swing") {
       const swingConfig = {
-        scoreThreshold: strategy.scoreThreshold ?? 20,
+        scoreThreshold: strategy.scoreThreshold ?? 8,
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         stopMultiplier: strategy.stopMultiplier ?? 2.0,
         tp1Multiplier:  strategy.tp1Multiplier  ?? 2.0,
@@ -577,7 +577,7 @@ router.post("/backtest/stream", async (req, res) => {
       result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
     } else if (strategy.type === "mean_reversion") {
       const v10Config = {
-        scoreThreshold: strategy.scoreThreshold ?? 18,
+        scoreThreshold: strategy.scoreThreshold ?? 8,
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         maxTradesDay:   strategy.maxTradesDay   ?? 4,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
@@ -585,7 +585,7 @@ router.post("/backtest/stream", async (req, res) => {
       result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
     } else if (strategy.type === "reversal") {
       const reversalConfig = {
-        scoreThreshold: strategy.scoreThreshold ?? 20,
+        scoreThreshold: Math.min(strategy.scoreThreshold ?? 10, 10),
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         maxTradesDay:   strategy.maxTradesDay   ?? 5,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
