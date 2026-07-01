@@ -28,13 +28,13 @@ args = "Start frontend"
 name = "Start application"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/api-server run dev"
 waitForPort = 8080
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [[workflows.workflow]]
 name = "Start frontend"
@@ -65,3 +65,11 @@ channel = "stable-25_05"
 JWT_SECRET = "f1e0d18cc40acff5c2e052d4aa7ee1c8fdbeff56e957b502fa661cc8c89031e4e8efd842257ad7d401ff4a1b2a67af41"
 ENCRYPTION_KEY = "42bad3b0fb384194200192306fef4e33"
 PORT = "8080"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8080
+externalPort = 8080

@@ -1,0 +1,29 @@
+I have a trading bot imported from GitHub into this Replit account. Please do a full diagnostic and fix ALL of the following potential issues:
+1. Dependencies
+    * Check package.json exists and has all required dependencies listed
+    * Make sure node_modules are installed (run npm install)
+    * Fix any missing or mismatched package versions
+    * Add any missing packages that the code imports but aren't in package.json
+2. Environment Variables / API Keys
+    * Identify every place in the code that uses process.env.VARIABLE_NAME
+    * List all required environment variables the bot needs
+    * Confirm they should be set in Replit's Secrets tab (not hardcoded)
+    * If any .env file is present, move those values to Replit Secrets instead
+3. Replit Configuration
+    * Create or fix the .replit file so the Run button works correctly
+    * Make sure the run command points to the correct entry file (e.g. node index.js)
+    * If using a web server or dashboard, ensure the correct port is used (Replit requires listening on 0.0.0.0 and port process.env.PORT || 3000)
+4. Entry Point & Start Script
+    * Confirm the main entry file exists and is correctly named
+    * Make sure package.json has a "start" script
+    * Fix any import/require path errors caused by the GitHub→Replit migration
+5. Common Replit-Specific Fixes
+    * Remove any localhost-only bindings and replace with 0.0.0.0
+    * Handle the case where Replit puts the project in a different directory structure
+    * Make sure the bot doesn't crash silently — add basic error handling if missing
+After fixing everything, give me:
+* A checklist of what was found and fixed
+* A list of all Secrets I need to add in Replit's Secrets tab with placeholder values
+* The correct Run command to use
+* Confirmation the bot should be working
+Make sure seeded logins are working and run a system wide check to make sure every UI buttons and features is doing what is supposed to and also run a backtest to make sure the strategy of the bot is not only working in database but also in admin and user UI 
