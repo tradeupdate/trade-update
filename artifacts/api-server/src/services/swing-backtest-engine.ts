@@ -69,6 +69,7 @@ export interface SwingBacktestResult {
   cacheFile: string;
   partialExitStats: { tp1Hits: number; tp2Hits: number; beHits: number; stage2Hits: number };
   trades: SwingTradeDetail[];
+  funnel?: Record<string, number>;
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────

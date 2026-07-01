@@ -79,6 +79,7 @@ export default function AdminBacktest() {
   const [sessionFilterEnabled, setSessionFilterEnabled] = useState(true);
   const [sessionStartHour, setSessionStartHour] = useState(6);
   const [sessionEndHour, setSessionEndHour] = useState(20);
+  const [scoreThresholdOverride, setScoreThresholdOverride] = useState<string>("");
   const [activeResult, setActiveResult] = useState<any>(null);
   const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
 
@@ -100,8 +101,10 @@ export default function AdminBacktest() {
     const from = dateFrom ? Math.floor(new Date(dateFrom).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400 * 7;
     const to = dateTo ? Math.floor(new Date(dateTo).getTime() / 1000) : Math.floor(Date.now() / 1000);
 
+    const thresholdNum = scoreThresholdOverride ? parseInt(scoreThresholdOverride) : undefined;
+
     runMutation.mutate(
-      { data: { strategyId, dateFrom: from, dateTo: to, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour } },
+      { data: { strategyId, dateFrom: from, dateTo: to, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour, scoreThresholdOverride: thresholdNum } as any },
       {
         onSuccess: (result) => {
           setActiveResult(result);
@@ -156,6 +159,7 @@ export default function AdminBacktest() {
   const regimeStats = (display as any)?.regimeStats ?? null;
   const scoreHistogram = (display as any)?.scoreHistogram ?? null;
   const partialExitStats = (display as any)?.partialExitStats ?? null;
+  const funnelData = (display as any)?.funnel ?? null;
 
   const totalRegimeCandles = (regimeStats?.trendingCandles ?? 0) + (regimeStats?.rangingCandles ?? 0);
   const trendingPct = totalRegimeCandles > 0 ? Math.round((regimeStats.trendingCandles / totalRegimeCandles) * 100) : 0;
@@ -218,6 +222,18 @@ export default function AdminBacktest() {
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
                 />
+              </div>
+
+              {/* Score threshold override */}
+              <div>
+                <label className="text-xs font-medium text-text-secondary mb-1.5 block uppercase tracking-wide">Score Threshold Override</label>
+                <input
+                  type="number" min="10" max="25" placeholder="Use strategy default"
+                  className="w-full h-10 px-3 rounded-md border border-border bg-background text-foreground text-sm"
+                  value={scoreThresholdOverride}
+                  onChange={(e) => setScoreThresholdOverride(e.target.value)}
+                />
+                <p className="text-[10px] text-text-secondary mt-1">V10: default 18/25. Lower = more trades.</p>
               </div>
 
               {/* Session filter */}
@@ -460,12 +476,62 @@ export default function AdminBacktest() {
                         </LineChart>
                       </ResponsiveContainer>
                     ) : (
-                      <div className="h-full flex items-center justify-center text-text-secondary text-sm">
-                        No trades generated — try a wider date range or lower score threshold
+                      <div className="h-full flex flex-col items-center justify-center gap-3 text-sm">
+                        <AlertTriangle className="w-8 h-8 text-yellow-400" />
+                        <span className="text-text-secondary font-medium">No trades generated</span>
+                        <span className="text-xs text-text-secondary text-center max-w-xs">
+                          Try a wider date range, lower score threshold, or disable the session filter
+                        </span>
                       </div>
                     )}
                   </CardContent>
                 </Card>
+
+                {/* Funnel Diagnostic — V10 only */}
+                {funnelData && (
+                  <Card className="bg-card border-border p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Zap className="w-3.5 h-3.5 text-yellow-400" />
+                      <span className="text-xs font-semibold text-foreground uppercase tracking-wide">Signal Funnel Breakdown</span>
+                      <span className="ml-auto text-[10px] text-text-secondary font-mono">{funnelData.totalProcessed ?? 0} candles processed</span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {[
+                        { label: "Score Null", key: "scoreNull", color: "text-accent-red", desc: "Engine returned no result (warmup)" },
+                        { label: "Trend Risk", key: "trendRisk", color: "text-orange-400", desc: "ADX > 30 or strong directional bias" },
+                        { label: "Below Threshold", key: "belowThreshold", color: "text-yellow-400", desc: "Score didn't meet threshold" },
+                        { label: "No Direction", key: "dirNone", color: "text-text-secondary", desc: "BUY & SELL both scored too low" },
+                        { label: "Daily Limit", key: "dailyLimit", color: "text-text-secondary", desc: "Max trades/day hit" },
+                        { label: "Loss Streak", key: "consLoss", color: "text-text-secondary", desc: "Consecutive loss stop triggered" },
+                        { label: "Executed", key: "executed", color: "text-primary", desc: "Trades actually entered" },
+                      ].map(({ label, key, color, desc }) => {
+                        const val = funnelData[key] ?? 0;
+                        const total = funnelData.totalProcessed ?? 1;
+                        const pct = total > 0 ? ((val / total) * 100).toFixed(1) : "0.0";
+                        return (
+                          <div key={key} className="bg-background border border-border rounded-lg p-3" title={desc}>
+                            <div className={`text-lg font-bold tabular-nums ${color}`}>{val.toLocaleString()}</div>
+                            <div className="text-[10px] text-text-secondary">{label}</div>
+                            <div className="text-[10px] text-text-secondary font-mono">{pct}% of candles</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {display.totalTrades === 0 && (
+                      <div className="mt-3 p-2 rounded-md bg-yellow-500/10 border border-yellow-500/20">
+                        <p className="text-xs text-yellow-400 font-medium">
+                          {funnelData.scoreNull > 0 && funnelData.trendRisk === 0 && funnelData.belowThreshold === 0
+                            ? `All ${funnelData.scoreNull} candles failed warmup — date range may be too short`
+                            : funnelData.trendRisk > (funnelData.totalProcessed ?? 0) * 0.5
+                            ? `${Math.round((funnelData.trendRisk / (funnelData.totalProcessed ?? 1)) * 100)}% of candles filtered by trend risk — market was strongly trending. Try disabling session filter or a calmer date range.`
+                            : funnelData.belowThreshold > 0
+                            ? `Most setups scored below threshold. Try lowering the score threshold (currently default 18).`
+                            : "No matching setups found. Try a wider date range."}
+                        </p>
+                      </div>
+                    )}
+                  </Card>
+                )}
 
                 {/* Signal Intelligence row */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

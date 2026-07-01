@@ -563,5 +563,15 @@ export async function runV10Backtest(
     cacheFile,
     partialExitStats: { tp1Hits: 0, tp2Hits: wins, beHits: 0, stage2Hits: 0 },
     trades: tradeList,
+    funnel: {
+      scoreNull: scoreNullCount,
+      trendRisk: trendRiskFiltered,
+      belowThreshold,
+      dirNone,
+      dailyLimit: dailyLimitBlocked,
+      consLoss: consLossBlocked,
+      executed: tradesExecuted,
+      totalProcessed: candles5m.length - WARMUP,
+    },
   };
 }

@@ -400,7 +400,7 @@ router.get("/copy-trade/history", async (_req, res) => {
 // Backtest — deterministic engine
 router.post("/backtest/run", async (req, res) => {
   try {
-    const { strategyId, dateFrom, dateTo, refreshData } = req.body;
+    const { strategyId, dateFrom, dateTo, refreshData, scoreThresholdOverride } = req.body;
     if (!strategyId) { res.status(400).json({ error: "strategyId required" }); return; }
 
     const strategyRows = await db.select().from(strategiesTable).where(eq(strategiesTable.id, strategyId)).limit(1);
@@ -440,7 +440,7 @@ router.post("/backtest/run", async (req, res) => {
       result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000);
     } else if (strategy.type === "mean_reversion") {
       const v10Config = {
-        scoreThreshold: strategy.scoreThreshold ?? 18,
+        scoreThreshold: scoreThresholdOverride != null ? Number(scoreThresholdOverride) : (strategy.scoreThreshold ?? 18),
         maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
         maxTradesDay: strategy.maxTradesDay ?? 4,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
@@ -511,6 +511,7 @@ router.post("/backtest/run", async (req, res) => {
       regimeStats: isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).regimeStats : null,
       scoreHistogram: isSniperOnly ? (result as Awaited<ReturnType<typeof runDeterministicBacktest>>).scoreHistogram : null,
       partialExitStats: (result as Awaited<ReturnType<typeof runSwingBacktest>>).partialExitStats ?? null,
+      funnel: (result as Awaited<ReturnType<typeof runV10Backtest>>).funnel ?? null,
       trades: result.trades,
       strategyType: strategy.type,
     });

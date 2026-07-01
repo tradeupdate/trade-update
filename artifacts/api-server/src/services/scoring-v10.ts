@@ -212,7 +212,7 @@ export function detectV10TrendRisk(candles15m: Candle[]): TrendRiskResult {
   const bullish = last10.filter((c) => c.close > c.open).length;
   const bearish = 10 - bullish;
   const strongDirectional = bullish >= 8 || bearish >= 8;
-  const trendRisk = adx > 25 || strongDirectional;
+  const trendRisk = adx > 30 || strongDirectional;
 
   logger.debug(
     `V10 trend risk: ADX=${adx.toFixed(1)} directional=${Math.max(bullish, bearish)}/10 trendRisk=${trendRisk}`
@@ -296,7 +296,7 @@ export function scoreV10(
   candles5m: Candle[],
   candles15m: Candle[]
 ): V10ScoreResult | null {
-  if (candles5m.length < 30 || candles15m.length < 30 || candles1m.length < 5) return null;
+  if (candles5m.length < 30 || candles15m.length < 30 || candles1m.length < 1) return null;
 
   const currentPrice = candles5m[candles5m.length - 1]!.close;
   const atrValue = calcATR(candles5m, 14);
