@@ -410,7 +410,7 @@ export function scoreV10(
       const tp = bb.middle;
       const tpDist = Math.abs(tp - currentPrice);
       const rr = tpDist / stopDist;
-      if (tpDist >= 5 && rr >= 0.6) {
+      if (tpDist >= 5 && rr >= 0.8) {
         logger.info(`V10 [T2] BUY: score=${t2Total}/25 c1=${c1} c2=${buyC2} c3=${buyC3t2} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
         return {
           total: t2Total, c1, c2: buyC2, c3: buyC3t2,
@@ -434,7 +434,7 @@ export function scoreV10(
       const tp = bb.middle;
       const tpDist = Math.abs(currentPrice - tp);
       const rr = tpDist / stopDist;
-      if (tpDist >= 5 && rr >= 0.6) {
+      if (tpDist >= 5 && rr >= 0.8) {
         logger.info(`V10 [T2] SELL: score=${t2Total}/25 c1=${c1} c2=${sellC2} c3=${sellC3t2} price=${currentPrice.toFixed(4)} sl=${sl.toFixed(4)} tp=${tp.toFixed(4)} RR=${rr.toFixed(2)}`);
         return {
           total: t2Total, c1, c2: sellC2, c3: sellC3t2,
