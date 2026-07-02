@@ -1210,6 +1210,51 @@ class BotManager {
     this.broadcastBotEvent(userId, state);
     this.logActivity(userId, `V10 [${v10Tier}] ${result.direction} @ ${entryPrice.toFixed(4)} — SL ${result.stopLoss.toFixed(4)} — TP mid-BB ${result.takeProfit.toFixed(4)} — Score ${result.total}/25 — cleanliness ${result.cleanlinessScore}/10${v10Tier === "T2" ? " — half size" : ""}`, "info").catch(() => {});
     logger.info({ userId, tradeId, dir: result.direction, score: result.total, pair }, "V10 trade opened");
+
+    // ── Place live Deriv contract for demo/live accounts ──────────────────
+    if (user.tradingMode !== "paper" && user.derivTokenEncrypted) {
+      let token: string;
+      try { token = decrypt(user.derivTokenEncrypted); } catch (err) {
+        logger.error({ userId, err }, "V10 Range Scalper: failed to decrypt token — staying paper");
+        return;
+      }
+      const self = this;
+      placePrecisionLiveContract(
+        result.direction as "BUY" | "SELL",
+        stake,
+        token,
+        pair,
+        5,
+        (settlement: PrecisionSettlementResult) => {
+          self.handlePrecisionSettlement(userId, tradeId, settlement).catch((err) =>
+            logger.error({ userId, tradeId, err }, "V10 Range Scalper settlement handler error")
+          );
+        }
+      ).then((orderResult) => {
+        if (orderResult.success && orderResult.contractId) {
+          const s = self.bots.get(userId);
+          if (s?.openTrade?.id === tradeId) {
+            s.openTrade.precisionContractId = orderResult.contractId;
+            s.openTrade.precisionIsLive = true;
+            s.openTrade.entryPrice = orderResult.entrySpot ?? s.openTrade.entryPrice;
+          }
+          db.update(tradesTable).set({ contractId: String(orderResult.contractId) })
+            .where(eq(tradesTable.id, tradeId)).catch(() => {});
+          logger.info({ userId, tradeId, contractId: orderResult.contractId }, `V10 Range Scalper live contract placed on ${pair}`);
+          self.logActivity(userId, `V10 Scalper Deriv contract #${orderResult.contractId} placed on ${pair} — 5m binary — awaiting settlement`, "info").catch(() => {});
+        } else {
+          logger.warn({ userId, tradeId, error: orderResult.error }, "V10 Range Scalper contract placement failed — monitoring as paper");
+          const sf = self.bots.get(userId);
+          if (sf?.openTrade?.id === tradeId) sf.openTrade.precisionFallbackPaper = true;
+          self.broadcastToUser(userId, "alert", {
+            level: "warning",
+            message: `Deriv contract failed: ${orderResult.error}. Monitoring as paper trade.`,
+          });
+        }
+      }).catch((err) => {
+        logger.error({ userId, tradeId, err }, "V10 Range Scalper placePrecisionLiveContract threw");
+      });
+    }
   }
 
   private calcATR(candles: Array<{ high: number; low: number; close: number }>, period = 14): number[] {
@@ -1300,6 +1345,51 @@ class BotManager {
     this.broadcastBotEvent(userId, state);
     this.logActivity(userId, `Trade opened: ${result.direction} @ ${entryPrice.toFixed(2)} — Stake $${stake.toFixed(2)} — Score ${result.total.toFixed(0)}${isDemo ? " [DEMO]" : ""}`, "info").catch(() => {});
     logger.info({ userId, tradeId, direction: result.direction, score: result.total }, "Trade opened");
+
+    // ── Place live Deriv contract for demo/live accounts ──────────────────
+    if (user.tradingMode !== "paper" && user.derivTokenEncrypted) {
+      let token: string;
+      try { token = decrypt(user.derivTokenEncrypted); } catch (err) {
+        logger.error({ userId, err }, "V75 Sniper: failed to decrypt token — staying paper");
+        return;
+      }
+      const self = this;
+      placePrecisionLiveContract(
+        result.direction as "BUY" | "SELL",
+        stake,
+        token,
+        "R_75",
+        15,
+        (settlement: PrecisionSettlementResult) => {
+          self.handlePrecisionSettlement(userId, tradeId, settlement).catch((err) =>
+            logger.error({ userId, tradeId, err }, "V75 Sniper settlement handler error")
+          );
+        }
+      ).then((orderResult) => {
+        if (orderResult.success && orderResult.contractId) {
+          const s = self.bots.get(userId);
+          if (s?.openTrade?.id === tradeId) {
+            s.openTrade.precisionContractId = orderResult.contractId;
+            s.openTrade.precisionIsLive = true;
+            s.openTrade.entryPrice = orderResult.entrySpot ?? s.openTrade.entryPrice;
+          }
+          db.update(tradesTable).set({ contractId: String(orderResult.contractId) })
+            .where(eq(tradesTable.id, tradeId)).catch(() => {});
+          logger.info({ userId, tradeId, contractId: orderResult.contractId }, "V75 Sniper live contract placed on R_75");
+          self.logActivity(userId, `Sniper Deriv contract #${orderResult.contractId} placed on R_75 — 15m binary — awaiting settlement`, "info").catch(() => {});
+        } else {
+          logger.warn({ userId, tradeId, error: orderResult.error }, "V75 Sniper contract placement failed — monitoring as paper");
+          const sf = self.bots.get(userId);
+          if (sf?.openTrade?.id === tradeId) sf.openTrade.precisionFallbackPaper = true;
+          self.broadcastToUser(userId, "alert", {
+            level: "warning",
+            message: `Deriv contract failed: ${orderResult.error}. Monitoring as paper trade.`,
+          });
+        }
+      }).catch((err) => {
+        logger.error({ userId, tradeId, err }, "V75 Sniper placePrecisionLiveContract threw");
+      });
+    }
   }
 
   private async monitorOpenTrades() {
@@ -1471,6 +1561,22 @@ class BotManager {
       if (trade.v10Trade) {
         const v10Price = derivService.getLatestTickForPair("R_10").price;
         trade.currentPrice = v10Price;
+
+        // Live Deriv contract — settlement arrives via WebSocket callback.
+        // Only apply an emergency time-stop (20 min) if the callback never fires.
+        if (trade.precisionIsLive) {
+          if (elapsed > 20 * 60) {
+            logger.warn({ userId, tradeId: trade.id }, "V10 Range Scalper emergency time-stop: Deriv settlement never arrived");
+            await this.handlePrecisionSettlement(userId, trade.id, {
+              won: false,
+              pnl: -trade.stake,
+              exitSpot: v10Price,
+              contractId: trade.precisionContractId ?? 0,
+            });
+          }
+          continue;
+        }
+
         const v10StopDist = Math.abs(trade.entryPrice - trade.stopLoss);
         const v10Pips = trade.direction === "BUY" ? v10Price - trade.entryPrice : trade.entryPrice - v10Price;
         if (state.tradingMode === "paper") {
@@ -1504,6 +1610,21 @@ class BotManager {
       }
 
       // ── Standard (sniper) trade monitoring ────────────────────────────
+
+      // Live Deriv contract — settlement arrives via WebSocket callback.
+      // Only apply an emergency time-stop (30 min) if the callback never fires.
+      if (trade.precisionIsLive) {
+        if (elapsed > 30 * 60) {
+          logger.warn({ userId, tradeId: trade.id }, "V75 Sniper emergency time-stop: Deriv settlement never arrived");
+          await this.handlePrecisionSettlement(userId, trade.id, {
+            won: false,
+            pnl: -trade.stake,
+            exitSpot: currentPrice,
+            contractId: trade.precisionContractId ?? 0,
+          });
+        }
+        continue;
+      }
 
       // Stop loss
       if (isBuy && currentPrice <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
