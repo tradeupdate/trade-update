@@ -16,6 +16,7 @@ import { runDeterministicBacktest, deleteCacheFile, getCacheStatus } from "../se
 import { runSwingBacktest } from "../services/swing-backtest-engine.js";
 import { runReversalBacktest } from "../services/reversal-backtest-engine.js";
 import { runV10Backtest } from "../services/v10-backtest-engine.js";
+import { runV10PrecisionBacktest } from "../services/v10-precision-backtest-engine.js";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
@@ -411,7 +412,8 @@ router.post("/backtest/run", async (req, res) => {
     const from = dateFrom ?? now - 86400 * 7;
     const to = dateTo ?? now;
 
-    const { sessionFilterEnabled, sessionStartHour, sessionEndHour } = req.body;
+    const { sessionFilterEnabled, sessionStartHour, sessionEndHour, startingBalance } = req.body;
+    const backtestStartBalance = Number(startingBalance) > 0 ? Number(startingBalance) : 5000;
     const config = {
       scoreThreshold: strategy.scoreThreshold ?? 16,
       maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
@@ -437,7 +439,7 @@ router.post("/backtest/run", async (req, res) => {
         maxTradesDay: strategy.maxTradesDay ?? 3,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 2,
       };
-      result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000);
+      result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, backtestStartBalance);
     } else if (strategy.type === "mean_reversion") {
       const v10Config = {
         scoreThreshold: scoreThresholdOverride != null ? Number(scoreThresholdOverride) : (strategy.scoreThreshold ?? 8),
@@ -445,7 +447,15 @@ router.post("/backtest/run", async (req, res) => {
         maxTradesDay: strategy.maxTradesDay ?? 4,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
       };
-      result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000);
+      result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, backtestStartBalance);
+    } else if (strategy.type === "precision_scalper") {
+      const precisionConfig = {
+        scoreThreshold: scoreThresholdOverride != null ? Number(scoreThresholdOverride) : (strategy.scoreThreshold ?? 15),
+        maxRiskPercent: strategy.maxRiskPercent ?? 0.5,
+        maxTradesDay: strategy.maxTradesDay ?? 20,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 5,
+      };
+      result = await runV10PrecisionBacktest(strategyId, precisionConfig, from, to, req.user!.userId, !!refreshData, backtestStartBalance);
     } else if (strategy.type === "reversal") {
       const reversalConfig = {
         scoreThreshold: strategy.scoreThreshold ?? 10,
@@ -453,9 +463,9 @@ router.post("/backtest/run", async (req, res) => {
         maxTradesDay: strategy.maxTradesDay ?? 10,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
       };
-      result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, 5000);
+      result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, backtestStartBalance);
     } else {
-      result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, 5000);
+      result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, backtestStartBalance);
     }
 
     const id = randomUUID();
@@ -485,7 +495,7 @@ router.post("/backtest/run", async (req, res) => {
       createdAt: now,
     });
 
-    const isSniperOnly = strategy.type !== "swing" && strategy.type !== "reversal" && strategy.type !== "mean_reversion";
+    const isSniperOnly = strategy.type !== "swing" && strategy.type !== "reversal" && strategy.type !== "mean_reversion" && strategy.type !== "precision_scalper";
     res.json({
       id,
       runId: result.runId,
@@ -523,7 +533,8 @@ router.post("/backtest/run", async (req, res) => {
 
 // Backtest — SSE streaming endpoint (same logic, progress events via SSE)
 router.post("/backtest/stream", async (req, res) => {
-  const { strategyId, dateFrom, dateTo, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour } = req.body;
+  const { strategyId, dateFrom, dateTo, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour, startingBalance } = req.body;
+  const backtestStartBalance = Number(startingBalance) > 0 ? Number(startingBalance) : 5000;
   if (!strategyId) { res.status(400).json({ error: "strategyId required" }); return; }
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -558,7 +569,7 @@ router.post("/backtest/stream", async (req, res) => {
       sessionEndHour:   sessionEndHour   ?? 20,
     };
 
-    sendEvent({ type: "progress", candleIndex: 0, totalCandles: 0, tradesExecuted: 0, wins: 0, currentBalance: 5000, phase: "fetching", funnel: {} });
+    sendEvent({ type: "progress", candleIndex: 0, totalCandles: 0, tradesExecuted: 0, wins: 0, currentBalance: backtestStartBalance, phase: "fetching", funnel: {} });
 
     const onProgress = (p: object) => sendEvent({ type: "progress", ...p });
 
@@ -574,7 +585,7 @@ router.post("/backtest/stream", async (req, res) => {
         maxTradesDay:   strategy.maxTradesDay   ?? 3,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 2,
       };
-      result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+      result = await runSwingBacktest(strategyId, swingConfig, from, to, req.user!.userId, !!refreshData, backtestStartBalance, onProgress);
     } else if (strategy.type === "mean_reversion") {
       const v10Config = {
         scoreThreshold: strategy.scoreThreshold ?? 8,
@@ -582,7 +593,15 @@ router.post("/backtest/stream", async (req, res) => {
         maxTradesDay:   strategy.maxTradesDay   ?? 4,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
       };
-      result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+      result = await runV10Backtest(strategyId, v10Config, from, to, req.user!.userId, !!refreshData, backtestStartBalance, onProgress);
+    } else if (strategy.type === "precision_scalper") {
+      const precisionConfig = {
+        scoreThreshold: strategy.scoreThreshold ?? 15,
+        maxRiskPercent: strategy.maxRiskPercent ?? 0.5,
+        maxTradesDay:   strategy.maxTradesDay   ?? 20,
+        consecutiveLossStop: strategy.consecutiveLossStop ?? 5,
+      };
+      result = await runV10PrecisionBacktest(strategyId, precisionConfig, from, to, req.user!.userId, !!refreshData, backtestStartBalance, onProgress);
     } else if (strategy.type === "reversal") {
       const reversalConfig = {
         scoreThreshold: Math.min(strategy.scoreThreshold ?? 10, 10),
@@ -590,9 +609,9 @@ router.post("/backtest/stream", async (req, res) => {
         maxTradesDay:   strategy.maxTradesDay   ?? 5,
         consecutiveLossStop: strategy.consecutiveLossStop ?? 3,
       };
-      result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+      result = await runReversalBacktest(strategyId, reversalConfig, from, to, req.user!.userId, !!refreshData, backtestStartBalance, onProgress);
     } else {
-      result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, 5000, onProgress);
+      result = await runDeterministicBacktest(strategyId, config, from, to, req.user!.userId, !!refreshData, backtestStartBalance, onProgress);
     }
 
     const id  = randomUUID();
@@ -611,7 +630,7 @@ router.post("/backtest/stream", async (req, res) => {
       createdAt: now2,
     });
 
-    const isSniperOnly = strategy.type !== "swing" && strategy.type !== "reversal" && strategy.type !== "mean_reversion";
+    const isSniperOnly = strategy.type !== "swing" && strategy.type !== "reversal" && strategy.type !== "mean_reversion" && strategy.type !== "precision_scalper";
     sendEvent({
       type: "complete",
       result: {

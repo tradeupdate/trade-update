@@ -533,6 +533,150 @@ class DerivService {
 
 export const derivService = new DerivService();
 
+// ── V10 Precision live contract placer ────────────────────────────────────────
+// Opens a fresh, dedicated WebSocket per trade (isolated from the shared market
+// data socket). Authorizes with the user's token, proposes a timed binary, buys
+// it, and subscribes to proposal_open_contract for settlement. Calls onSettlement
+// asynchronously when the contract expires.
+
+export interface PrecisionSettlementResult {
+  won: boolean;
+  pnl: number;       // positive = profit, negative = loss
+  exitSpot: number;
+  contractId: number;
+}
+
+export async function placePrecisionLiveContract(
+  direction: "BUY" | "SELL",
+  stake: number,
+  token: string,
+  symbol: string,
+  durationMinutes: number,
+  onSettlement: (result: PrecisionSettlementResult) => void
+): Promise<PlaceOrderResult> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(WS_URL);
+    let settled = false;
+    let contractId: number | null = null;
+
+    // Central cleanup — safe to call multiple times; only acts once
+    const finish = (error?: string, settlement?: PrecisionSettlementResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(connectTimeout);
+      if (settlementTimeout) { clearTimeout(settlementTimeout); settlementTimeout = null; }
+      try { ws.close(); } catch {}
+      if (error) {
+        resolve({ success: false, error });
+      }
+      // settlement path: resolve already called earlier (after buy); just invoke callback
+      if (settlement) onSettlement(settlement);
+    };
+
+    const fail = (error: string) => finish(error);
+
+    // Hard timeout — if no contract_id after 20s, abort
+    const connectTimeout = setTimeout(() => fail("Connection or proposal timed out"), 20000);
+    // Settlement timeout — if Deriv never settles, close after duration + 10min buffer
+    let settlementTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    let step: "auth" | "proposal" | "buy" | "monitor" = "auth";
+    let proposalId: string | null = null;
+    let buyPrice: number | null = null;
+    let entrySpot: number | null = null;
+
+    ws.on("open", () => {
+      ws.send(JSON.stringify({ authorize: token }));
+    });
+
+    ws.on("message", (raw: Buffer) => {
+      let msg: any;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      if (msg.error) {
+        logger.error({ code: msg.error.code, msg: msg.error.message }, "V10P Deriv contract error");
+        fail(`Deriv error: ${msg.error.message}`);
+        return;
+      }
+
+      if (msg.msg_type === "authorize" && step === "auth") {
+        step = "proposal";
+        const contractType = direction === "BUY" ? "CALL" : "PUT";
+        ws.send(JSON.stringify({
+          proposal: 1,
+          amount: stake,
+          basis: "stake",
+          contract_type: contractType,
+          currency: "USD",
+          duration: durationMinutes,
+          duration_unit: "m",
+          symbol,
+        }));
+        return;
+      }
+
+      if (msg.msg_type === "proposal" && step === "proposal") {
+        step = "buy";
+        proposalId = msg.proposal?.id;
+        buyPrice = msg.proposal?.ask_price;
+        if (!proposalId || !buyPrice) { fail("Invalid proposal response"); return; }
+        ws.send(JSON.stringify({ buy: proposalId, price: buyPrice }));
+        return;
+      }
+
+      if (msg.msg_type === "buy" && step === "buy") {
+        clearTimeout(connectTimeout);
+        contractId = msg.buy?.contract_id;
+        entrySpot = msg.buy?.entry_spot ?? msg.buy?.start_spot ?? null;
+        const actualBuyPrice = msg.buy?.buy_price ?? stake;
+        if (!contractId) { fail("No contract_id in buy response"); return; }
+
+        step = "monitor";
+        // Subscribe to contract updates for settlement
+        ws.send(JSON.stringify({
+          proposal_open_contract: 1,
+          contract_id: contractId,
+          subscribe: 1,
+        }));
+
+        // Settlement safety timeout — contract duration + 10-minute buffer
+        settlementTimeout = setTimeout(() => {
+          logger.warn({ contractId }, "V10P settlement timeout — forced loss");
+          finish(undefined, { won: false, pnl: -actualBuyPrice, exitSpot: entrySpot ?? 0, contractId: contractId! });
+        }, (durationMinutes + 10) * 60 * 1000);
+
+        // Resolve immediately with contract_id so the caller can store it
+        resolve({ success: true, contractId, entrySpot: entrySpot ?? undefined, buyPrice: actualBuyPrice });
+        return;
+      }
+
+      if (msg.msg_type === "proposal_open_contract" && step === "monitor") {
+        const poc = msg.proposal_open_contract;
+        if (!poc || !poc.is_sold) return; // Not yet settled
+
+        const profit = parseFloat(poc.profit ?? "0");
+        const won = profit > 0;
+        const exitSpotVal = parseFloat(poc.exit_tick ?? poc.sell_spot ?? poc.entry_spot ?? "0");
+        const pnl = Math.round(profit * 100) / 100;
+
+        logger.info({ contractId, won, pnl, exitSpot: exitSpotVal }, "V10P contract settled");
+        finish(undefined, { won, pnl, exitSpot: exitSpotVal, contractId: poc.contract_id });
+        return;
+      }
+    });
+
+    ws.on("error", (err) => {
+      logger.error({ err: err.message }, "V10P contract WS error");
+      fail(`WebSocket error: ${err.message}`);
+    });
+
+    ws.on("close", () => {
+      // Only fail if we haven't finished successfully (i.e. pre-buy close)
+      if (!settled) fail("WebSocket closed before settlement");
+    });
+  });
+}
+
 // ── Shared chunked candle fetcher for backtests ───────────────────────────────
 // Opens a temporary WS per chunk, walks backwards from dateTo to dateFrom.
 

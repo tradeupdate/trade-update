@@ -78,6 +78,19 @@ async function seed() {
       pair: "R_10",
       createdAt: now, updatedAt: now, createdBy: "system", winRate: 0, avgScore: 0,
     },
+    {
+      id: randomUUID(), name: "V10 Precision Scalper", type: "precision_scalper",
+      description: "High-frequency mean-reversion scalper for Volatility 10 Index. Uses 1-minute entries with RSI(7), Stochastic(5,3,3) and Bollinger Bands(20,2) triple confluence. Targets 60+ trades per month at 65%+ win rate. 24/7 operation. Single target at middle BB.",
+      status: "active", entryTimeframe: "1m", signalTimeframe: "1m", trendTimeframe: "5m",
+      sessionsEnabled: JSON.stringify(["all_hours"]),
+      scoreThreshold: 15, maxTradesDay: 20, maxRiskPercent: 0.5, maxTradesHour: 4,
+      stopMultiplier: 0.6, tp1Multiplier: 0, tp2Multiplier: 0,
+      counterTrendEnabled: 0, firstCandleRule: 0,
+      momentumExtensionEnabled: 0, spikeFilterEnabled: 1, spikeFilterMultiplier: 4.0,
+      consolidationDetection: 0, consecutiveLossStop: 5,
+      pair: "R_10",
+      createdAt: now, updatedAt: now, createdBy: "system", winRate: 0, avgScore: 0,
+    },
   ];
 
   for (const s of strategies) {
@@ -85,10 +98,11 @@ async function seed() {
   }
   console.log("✅ Strategies seeded");
 
-  const sniperStrategyId   = strategies[0]!.id;
-  const swingStrategyId    = strategies[1]!.id;
-  const reversalStrategyId = strategies[2]!.id;
-  const v10StrategyId      = strategies[3]!.id;
+  const sniperStrategyId      = strategies[0]!.id;
+  const swingStrategyId       = strategies[1]!.id;
+  const reversalStrategyId    = strategies[2]!.id;
+  const v10StrategyId         = strategies[3]!.id;
+  const v10PrecisionStrategyId = strategies[4]!.id;
 
   // Admin user
   const adminExists = await db.select().from(usersTable).where(eq(usersTable.username, "admin")).limit(1);
@@ -173,6 +187,23 @@ async function seed() {
     console.log("✅ V10 test user: v10test100 / V10Test100!");
   } else {
     console.log("ℹ️  V10 test user already exists");
+  }
+
+  // V10 Precision test user
+  const v10PrecisionTestExists = await db.select().from(usersTable).where(eq(usersTable.username, "v10precision100")).limit(1);
+  if (!v10PrecisionTestExists.length) {
+    const v10pHash = await bcrypt.hash("V10Prec100!", 12);
+    await db.insert(usersTable).values({
+      id: randomUUID(), username: "v10precision100", email: "v10precision@tradeupdate.app",
+      passwordHash: v10pHash, role: "user", status: "active", isActive: 1,
+      tradingProfile: "safe", tradingMode: "paper",
+      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      forcePasswordChange: 0, createdAt: now, strategyId: v10PrecisionStrategyId,
+      activePair: "R_10",
+    });
+    console.log("✅ V10 Precision test user: v10precision100 / V10Prec100!");
+  } else {
+    console.log("ℹ️  V10 Precision test user already exists");
   }
 
   console.log("\n🎉 Seed complete!");

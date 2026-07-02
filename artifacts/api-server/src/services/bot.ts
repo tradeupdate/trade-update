@@ -6,11 +6,12 @@ import {
 } from "@workspace/db";
 import { eq, and, gte, lte, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
-import { derivService } from "./deriv.js";
-import type { DerivContract } from "./deriv.js";
+import { derivService, placePrecisionLiveContract } from "./deriv.js";
+import type { DerivContract, PrecisionSettlementResult } from "./deriv.js";
 import { decrypt } from "../lib/crypto.js";
 import { score, type ScoreResult } from "./scoring.js";
 import { scoreV10, detectRangeCleanliness, detectV10TrendRisk } from "./scoring-v10.js";
+import { scoreV10Precision } from "./v10-precision-scoring.js";
 import {
   detectConsolidationRange, detectBreakout, scoreSwing, build4hCandles,
   type ConsolidationRange, type BreakoutResult,
@@ -63,6 +64,8 @@ export interface BotState {
   v10CleanlinessScore: number | null;
   v10TrendRisk: boolean;
   v10Adx: number | null;
+  // V10 Precision Scalper state
+  v10PrecisionCooldownUntil: number | null;
   // Risk management state
   capitalPreservationMode: boolean;
   hardStopped: boolean;
@@ -99,6 +102,14 @@ interface OpenTrade {
   v10Trade?: boolean;
   v10TargetPrice?: number;
   v10OpenedAt?: number;
+  // V10 Precision Scalper-specific (optional)
+  v10PrecisionTrade?: boolean;
+  v10PrecisionTargetPrice?: number;
+  /** Set when a live Deriv contract has been placed — settlement comes from Deriv, not local monitoring */
+  precisionContractId?: number;
+  precisionIsLive?: boolean;
+  /** Set when live placement failed mid-trade — force binary P&L even though tradingMode is non-paper */
+  precisionFallbackPaper?: boolean;
 }
 
 interface ScoreBreakdown {
@@ -271,8 +282,11 @@ class BotManager {
     }
 
     // CHECK 9 — Consecutive losses
+    // precision_scalper uses strategy-level stop (5); other strategies use profile-based stop.
     const maxLosses: Record<string, number> = { safe: 3, pro: 4, aggressive: 5 };
-    const maxConsecLosses = maxLosses[user.tradingProfile || "safe"] || 3;
+    const maxConsecLosses = strategy.type === "precision_scalper"
+      ? (strategy.consecutiveLossStop ?? 5)
+      : (maxLosses[user.tradingProfile || "safe"] || 3);
     if (state.consecutiveLosses >= maxConsecLosses) {
       state.isRunning = false;
       state.pauseReason = `${state.consecutiveLosses} consecutive losses — tap Resume to continue`;
@@ -280,8 +294,10 @@ class BotManager {
       return;
     }
 
-    // CHECK 10 — Cooldown (10 minutes since last trade)
-    if (state.lastTradeTime) {
+    // CHECK 10 — Cooldown between trades.
+    // precision_scalper manages its own 3-minute cooldown via v10PrecisionCooldownUntil,
+    // so we skip the global 10-minute gate for that strategy type.
+    if (state.lastTradeTime && strategy.type !== "precision_scalper") {
       const secondsSince = now - state.lastTradeTime;
       const cooldownSecs = 10 * 60;
       if (secondsSince < cooldownSecs) {
@@ -341,6 +357,12 @@ class BotManager {
     // ── V10 MEAN REVERSION strategy routing ───────────────────────────────
     if (strategy.type === "mean_reversion") {
       await this.evaluateV10Signal(userId, user, strategy, state, now);
+      return;
+    }
+
+    // ── V10 PRECISION SCALPER strategy routing ────────────────────────────
+    if (strategy.type === "precision_scalper") {
+      await this.evaluateV10PrecisionSignal(userId, user, strategy, state, now);
       return;
     }
 
@@ -744,6 +766,295 @@ class BotManager {
     logger.info({ userId, tradeId, dir: result.direction, score: result.total, rr: result.rr, premium: result.isPremium }, "Reversal trade opened");
   }
 
+  // ── V10 Precision Scalper signal evaluation ──────────────────────────────
+  private async evaluateV10PrecisionSignal(
+    userId: string,
+    user: any,
+    strategy: any,
+    state: BotState,
+    now: number
+  ) {
+    const pair = user.activePair || "R_10";
+    const candles1m = derivService.getCandlesForPair(pair, "1m", 100);
+    const candles5m = derivService.getCandlesForPair(pair, "5m", 60);
+
+    if (candles1m.length < 30) {
+      state.pauseReason = null;
+      this.broadcastToUser(userId, "scores", {
+        loading: true,
+        message: `Gathering V10 Precision data... (${candles1m.length}/30 1m candles)`,
+        candlesLoaded: candles1m.length,
+        candlesNeeded: 30,
+      });
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // V10 Precision-specific cooldown (3 minutes after last trade)
+    if (state.v10PrecisionCooldownUntil && now < state.v10PrecisionCooldownUntil) {
+      const remaining = state.v10PrecisionCooldownUntil - now;
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      state.pauseReason = `V10 Precision cooldown — ${mins}m ${secs}s remaining`;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+    if (state.v10PrecisionCooldownUntil && now >= state.v10PrecisionCooldownUntil) {
+      state.v10PrecisionCooldownUntil = null;
+    }
+
+    const result = scoreV10Precision(candles1m, candles5m);
+
+    if (!result) {
+      state.currentScore = null;
+      state.pauseReason = "Gathering V10 Precision signal data...";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    state.currentScore = result.total;
+    state.scoreBreakdown = {
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
+      total: result.total,
+      direction: result.signal,
+    };
+
+    this.broadcastToUser(userId, "scores", {
+      total: result.total,
+      c1: result.c1,
+      c2: result.c2,
+      c3: result.c3,
+      signal: result.signal,
+      direction: result.signal,
+      loading: false,
+      rsi5m: null,
+      rejectionReason: result.signal === "NONE" ? result.reason : null,
+    });
+
+    const signalId = randomUUID();
+    const action = result.signal !== "NONE" ? "executed" : "rejected";
+    await db.insert(signalLogTable).values({
+      id: signalId, userId, strategyId: strategy.id, timestamp: now,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
+      direction: result.signal, action, rejectionReason: result.signal === "NONE" ? result.reason : null,
+      ema9: null, ema21: null, rsi: null,
+      rangeContext: `bb_middle:${result.bbMiddle.toFixed(4)}|bb_upper:${result.bbUpper.toFixed(4)}|bb_lower:${result.bbLower.toFixed(4)}`,
+      sessionName: "24/7",
+      consolidationDetected: 0, spikeDetected: 0,
+    });
+
+    if (result.signal === "NONE") {
+      state.pauseReason = result.reason;
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // Validate stop levels before executing
+    const entryPrice = result.entryPrice;
+    let { stopLoss, takeProfit } = result;
+
+    if (result.signal === "BUY" && stopLoss >= entryPrice) {
+      logger.error({ userId }, "V10P BUY stop above entry — correcting");
+      stopLoss = entryPrice - Math.max(3, result.atrValue * 1.5);
+    }
+    if (result.signal === "SELL" && stopLoss <= entryPrice) {
+      logger.error({ userId }, "V10P SELL stop below entry — correcting");
+      stopLoss = entryPrice + Math.max(3, result.atrValue * 1.5);
+    }
+    if (result.signal === "BUY" && takeProfit <= entryPrice) {
+      state.pauseReason = "V10P: TP below entry — skipping";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+    if (result.signal === "SELL" && takeProfit >= entryPrice) {
+      state.pauseReason = "V10P: TP above entry — skipping";
+      this.broadcastBotEvent(userId, state);
+      return;
+    }
+
+    // Execute V10 Precision trade
+    state.pauseReason = null;
+    const balance = user.accountBalance || 5000;
+    const riskPct = (strategy.maxRiskPercent ?? 0.5) / 100;
+    let stake = balance * riskPct;
+    if (state.recoveryModeActive) stake *= 0.5;
+    stake = Math.max(1.0, Math.min(5.0, Math.round(stake * 100) / 100));
+
+    const tradeId = randomUUID();
+
+    await db.insert(tradesTable).values({
+      id: tradeId, userId, strategyId: strategy.id,
+      direction: result.signal, entryPrice, stake,
+      scoreTotal: result.total, scoreTrend: result.c1, scoreVolatility: result.c2,
+      scoreTiming: result.c3, scorePullback: 0, scoreRisk: 0,
+      isCopyTrade: 0, isPaper: user.tradingMode === "paper" ? 1 : 0, isDemo: user.demoMode === 1 ? 1 : 0,
+      symbol: pair, tradingMode: user.tradingMode || "paper", status: "open",
+      stopLoss, takeProfit1: takeProfit, takeProfit2: takeProfit,
+      recoveryModeActive: state.recoveryModeActive ? 1 : 0,
+      winStreakCautionActive: state.winStreakCautionActive ? 1 : 0,
+      sessionName: "24/7",
+      rangeContext: `bb_middle:${result.bbMiddle.toFixed(4)}|stop:${stopLoss.toFixed(4)}|tp:${takeProfit.toFixed(4)}|score:${result.total}/20`,
+      openedAt: now,
+      rsiAtEntry: null, stochAtEntry: null, macdAtEntry: null,
+    });
+
+    state.openTrade = {
+      id: tradeId,
+      direction: result.signal,
+      entryPrice,
+      currentPrice: entryPrice,
+      stake,
+      pnl: 0,
+      stopLoss,
+      takeProfit1: takeProfit,
+      takeProfit2: takeProfit,
+      breakEvenMoved: false,
+      partialClosed: false,
+      momentumExtensionActive: false,
+      openedAt: now,
+      v10PrecisionTrade: true,
+      v10PrecisionTargetPrice: takeProfit,
+    };
+    state.lastTradeTime = now;
+    state.v10PrecisionCooldownUntil = now + 3 * 60;
+    state.lastSignalScore = result.total;
+    state.lastSignalDirection = result.signal;
+
+    this.broadcastToUser(userId, "trade", { action: "opened", trade: state.openTrade });
+    this.broadcastBotEvent(userId, state);
+
+    const modeLabel = user.tradingMode === "demo" ? "[DEMO LIVE]" : "[PAPER]";
+    this.logActivity(userId, `V10 Precision ${result.signal} @ ${entryPrice.toFixed(4)} — SL ${stopLoss.toFixed(4)} — TP ${takeProfit.toFixed(4)} (50% SL) — Score ${result.total}/20 ${modeLabel}`, "info").catch(() => {});
+    logger.info({ userId, tradeId, dir: result.signal, score: result.total, pair, mode: user.tradingMode }, "V10 Precision trade opened");
+
+    // ── Place live contract for demo/live accounts ──────────────────────
+    if (user.tradingMode !== "paper" && user.derivTokenEncrypted) {
+      let token: string;
+      try {
+        token = decrypt(user.derivTokenEncrypted);
+      } catch (err) {
+        logger.error({ userId, err }, "V10P: Failed to decrypt Deriv token — staying paper");
+        return;
+      }
+
+      const self = this;
+      placePrecisionLiveContract(
+        result.signal,
+        stake,
+        token,
+        pair,
+        25, // 25-minute contract
+        (settlement: PrecisionSettlementResult) => {
+          self.handlePrecisionSettlement(userId, tradeId, settlement).catch((err) =>
+            logger.error({ userId, tradeId, err }, "V10P settlement handler error")
+          );
+        }
+      ).then((orderResult) => {
+        if (orderResult.success && orderResult.contractId) {
+          // Mark the open trade as live (skip local SL/TP monitoring)
+          const s = self.bots.get(userId);
+          if (s?.openTrade?.id === tradeId) {
+            s.openTrade.precisionContractId = orderResult.contractId;
+            s.openTrade.precisionIsLive = true;
+            s.openTrade.entryPrice = orderResult.entrySpot ?? entryPrice;
+          }
+          // Store contract_id in DB
+          db.update(tradesTable).set({ contractId: String(orderResult.contractId) })
+            .where(eq(tradesTable.id, tradeId))
+            .catch(() => {});
+          logger.info({ userId, tradeId, contractId: orderResult.contractId }, "V10P live contract placed");
+          self.logActivity(userId, `V10P Deriv contract #${orderResult.contractId} placed — awaiting settlement`, "info").catch(() => {});
+        } else {
+          logger.warn({ userId, tradeId, error: orderResult.error }, "V10P contract placement failed — monitoring as paper");
+          // Mark trade so closeTrade() uses binary P&L regardless of tradingMode
+          const sf = self.bots.get(userId);
+          if (sf?.openTrade?.id === tradeId) sf.openTrade.precisionFallbackPaper = true;
+          self.broadcastToUser(userId, "alert", {
+            level: "warning",
+            message: `Deriv contract failed: ${orderResult.error}. Monitoring as paper trade.`,
+          });
+        }
+      }).catch((err) => {
+        logger.error({ userId, tradeId, err }, "V10P placePrecisionLiveContract threw");
+      });
+    }
+  }
+
+  // ── V10 Precision settlement handler (called by Deriv WebSocket callback) ─
+  private async handlePrecisionSettlement(
+    userId: string,
+    tradeId: string,
+    settlement: PrecisionSettlementResult
+  ): Promise<void> {
+    const state = this.bots.get(userId);
+    if (!state) return;
+
+    // If state.openTrade no longer matches (already closed by time-stop), skip
+    if (state.openTrade?.id !== tradeId) {
+      logger.warn({ userId, tradeId }, "V10P settlement arrived but trade already closed");
+      return;
+    }
+
+    const trade = state.openTrade;
+    const now = Math.floor(Date.now() / 1000);
+    const duration = Math.floor((now - trade.openedAt) / 60);
+    const pnl = settlement.pnl;
+    const exitPrice = settlement.exitSpot || trade.currentPrice;
+    const isWin = pnl > 0;
+
+    await db.update(tradesTable).set({
+      status: "closed",
+      closedAt: now,
+      exitPrice,
+      pnl,
+      durationMinutes: duration,
+      contractId: String(settlement.contractId),
+    }).where(eq(tradesTable.id, tradeId));
+
+    // Update streaks and daily P&L
+    if (isWin) {
+      state.consecutiveWins++;
+      state.consecutiveLosses = 0;
+      if (state.consecutiveWins >= 5) state.winStreakCautionActive = true;
+    } else {
+      state.consecutiveLosses++;
+      state.consecutiveWins = 0;
+      state.winStreakCautionActive = false;
+    }
+    state.dailyPnl += pnl;
+    state.openTrade = null;
+    state.pauseReason = null;
+    state.v10PrecisionCooldownUntil = now + 3 * 60;
+
+    // Update user balance
+    const users = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const user = users[0];
+    if (user) {
+      const newBalance = Math.round(((user.accountBalance || 5000) + pnl) * 100) / 100;
+      const newPeak = Math.max(user.peakBalance || newBalance, newBalance);
+      state.currentDrawdown = (newPeak - newBalance) / newPeak;
+      state.peakBalance = newPeak;
+      if (state.currentDrawdown >= 0.15 && !state.recoveryModeActive) {
+        state.recoveryModeActive = true;
+        this.broadcastToUser(userId, "alert", { level: "warning", message: "Recovery mode activated — stake reduced 50%" });
+      }
+      if (state.recoveryModeActive && newBalance >= newPeak * 0.95) {
+        state.recoveryModeActive = false;
+        this.broadcastToUser(userId, "alert", { level: "info", message: "Recovery complete" });
+      }
+      await db.update(usersTable).set({ accountBalance: newBalance, peakBalance: newPeak }).where(eq(usersTable.id, userId));
+    }
+
+    const pnlStr = pnl >= 0 ? `+${pnl.toFixed(2)}` : `-${Math.abs(pnl).toFixed(2)}`;
+    this.broadcastToUser(userId, "trade", { action: "closed", result: isWin ? "win" : "loss", pnl, tradeId, exitPrice });
+    this.broadcastBotEvent(userId, state);
+    this.logActivity(userId, `V10P Deriv contract #${settlement.contractId} settled — ${pnlStr} — ${isWin ? "WIN ✓" : "LOSS ✗"}`, isWin ? "win" : "loss").catch(() => {});
+    logger.info({ userId, tradeId, contractId: settlement.contractId, pnl, won: isWin }, "V10P settlement processed");
+  }
+
   // ── V10 Range Scalper signal evaluation ──────────────────────────────────
   private async evaluateV10Signal(
     userId: string,
@@ -1104,6 +1415,55 @@ class BotManager {
         continue;
       }
 
+      // ── V10 Precision Scalper trade monitoring ─────────────────────────
+      if (trade.v10PrecisionTrade) {
+        const v10pPrice = derivService.getLatestTickForPair("R_10").price;
+        trade.currentPrice = v10pPrice;
+
+        // Live Deriv contract — settlement arrives via WebSocket callback.
+        // Only apply an emergency time-stop (35 min) in case the callback never fires.
+        if (trade.precisionIsLive) {
+          if (elapsed > 35 * 60) {
+            logger.warn({ userId, tradeId: trade.id }, "V10P emergency time-stop: Deriv settlement never arrived");
+            await this.handlePrecisionSettlement(userId, trade.id, {
+              won: false,
+              pnl: -trade.stake,
+              exitSpot: v10pPrice,
+              contractId: trade.precisionContractId ?? 0,
+            });
+          }
+          continue;
+        }
+
+        // Paper mode — simulate using live tick feed
+        const v10pStopDist = Math.abs(trade.entryPrice - trade.stopLoss);
+        const v10pPips = trade.direction === "BUY" ? v10pPrice - trade.entryPrice : trade.entryPrice - v10pPrice;
+        trade.pnl = Math.round(trade.stake * (v10pStopDist > 0 ? v10pPips / v10pStopDist : 0) * 0.87 * 100) / 100;
+
+        // SL check
+        if (trade.direction === "BUY" && v10pPrice <= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+        if (trade.direction === "SELL" && v10pPrice >= trade.stopLoss) { shouldClose = true; closeReason = "stop_loss"; }
+
+        if (!shouldClose) {
+          // TP check (50% SL target)
+          const tp = trade.v10PrecisionTargetPrice ?? trade.takeProfit1;
+          if (trade.direction === "BUY" && v10pPrice >= tp) { shouldClose = true; closeReason = "tp2"; }
+          if (trade.direction === "SELL" && v10pPrice <= tp) { shouldClose = true; closeReason = "tp2"; }
+
+          // 25-minute time stop
+          if (elapsed > 25 * 60) { shouldClose = true; closeReason = "time_stop"; }
+        }
+
+        if (shouldClose) {
+          await this.closeTrade(userId, state, trade, v10pPrice, closeReason);
+          const state2 = this.bots.get(userId);
+          if (state2) {
+            state2.v10PrecisionCooldownUntil = Math.floor(Date.now() / 1000) + 3 * 60;
+          }
+        }
+        continue;
+      }
+
       // ── V10 trade monitoring ───────────────────────────────────────────
       if (trade.v10Trade) {
         const v10Price = derivService.getLatestTickForPair("R_10").price;
@@ -1190,7 +1550,22 @@ class BotManager {
     let pnl: number;
     const isPaper = state.tradingMode === "paper";
 
-    if (isPaper) {
+    // V10 Precision paper trades use binary-options P&L (87% payout, not pip-based).
+    // Also applies when live placement failed and bot fell back to paper monitoring.
+    if (trade.v10PrecisionTrade && (isPaper || trade.precisionFallbackPaper)) {
+      if (reason === "stop_loss") {
+        pnl = -trade.stake;
+      } else if (reason === "tp2") {
+        pnl = Math.round(trade.stake * 0.87 * 100) / 100;
+      } else if (reason === "time_stop") {
+        // Partial: half-payout if moving in right direction, half-loss otherwise
+        pnl = rawPips > 0
+          ? Math.round(trade.stake * 0.87 * 0.5 * 100) / 100
+          : -Math.round(trade.stake * 0.5 * 100) / 100;
+      } else {
+        pnl = rawPips > 0 ? Math.round(trade.stake * 0.87 * 100) / 100 : -trade.stake;
+      }
+    } else if (isPaper) {
       if (reason === "stop_loss") {
         pnl = -trade.stake;
       } else if (reason === "tp2") {
@@ -1328,6 +1703,7 @@ class BotManager {
         swingConsolidation: null, swingBreakout: null, swingLastEval1hTime: 0,
         reversalCooldownUntil: null,
         v10CooldownUntil: null, v10CleanlinessScore: null, v10TrendRisk: false, v10Adx: null,
+        v10PrecisionCooldownUntil: null,
         capitalPreservationMode: false, hardStopped: false, microStakeRecoveryMode: false,
       });
     }

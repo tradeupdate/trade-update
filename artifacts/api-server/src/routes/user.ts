@@ -289,6 +289,31 @@ router.post("/deriv/token", async (req, res) => {
   }
 });
 
+// Trading mode (paper / demo)
+router.post("/trading-mode", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const { mode } = req.body;
+    if (!["paper", "demo"].includes(mode)) {
+      res.status(400).json({ error: "Invalid mode. Use 'paper' or 'demo'." });
+      return;
+    }
+    // Switching to demo requires a saved Deriv token
+    if (mode === "demo") {
+      const users = await db.select({ tok: usersTable.derivTokenEncrypted }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+      if (!users[0]?.tok) {
+        res.status(400).json({ error: "Save your Deriv API token first via POST /api/user/deriv/token" });
+        return;
+      }
+    }
+    await db.update(usersTable).set({ tradingMode: mode }).where(eq(usersTable.id, userId));
+    res.json({ tradingMode: mode, message: `Switched to ${mode} mode` });
+  } catch (err) {
+    logger.error({ err }, "Update trading mode error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Trading profile
 router.post("/trading-profile", async (req, res) => {
   try {
@@ -357,14 +382,18 @@ router.get("/candles", async (req, res) => {
   res.json({ candles, timeframe: safeTf, pair, totalStored });
 });
 
-// Latest tick
-router.get("/tick", (_req, res) => {
-  const tick = derivService.getLatestTick();
-  res.json({
-    price: tick.price,
-    timestamp: tick.timestamp,
-    direction: "up",
-  });
+// Latest tick — returns the price for the user's active pair (R_10 or R_75)
+router.get("/tick", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const rows = await db.select({ activePair: usersTable.activePair }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const pair = rows[0]?.activePair || "R_75";
+    const tick = derivService.getLatestTickForPair(pair);
+    res.json({ price: tick.price, timestamp: tick.timestamp, direction: "up", pair });
+  } catch {
+    const tick = derivService.getLatestTick();
+    res.json({ price: tick.price, timestamp: tick.timestamp, direction: "up", pair: "R_75" });
+  }
 });
 
 // SSE stream — full real-time feed
@@ -390,13 +419,14 @@ router.get("/stream", async (req, res) => {
     if (user) botManager.getOrCreate(userId, user.tradingMode || "paper");
   } catch {}
 
-  // Tick broadcast — throttle to 1 per second
+  // Tick broadcast — throttle to 1 per second, using the user's active pair
+  const activePair = user?.activePair || "R_75";
   let lastTickPrice = 0;
   const tickInterval = setInterval(() => {
     try {
-      const tick = derivService.getLatestTick();
+      const tick = derivService.getLatestTickForPair(activePair);
       const direction = tick.price >= lastTickPrice ? "up" : "down";
-      const payload = { price: tick.price, direction, time: tick.timestamp };
+      const payload = { price: tick.price, direction, time: tick.timestamp, pair: activePair };
       res.write(`data: ${JSON.stringify({ type: "tick", payload })}\n\n`);
       lastTickPrice = tick.price;
     } catch {}
