@@ -475,7 +475,7 @@ export default function Dashboard() {
   const prevDailyLossHit = useRef(false);
   const prevProfitLockHit = useRef(false);
   useEffect(() => {
-    if (Notification.permission !== "granted") return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
     const bot = sse.bot as any;
     const hitLoss = !!bot?.dailyLossHit;
     const hitProfit = !!bot?.profitLockHit;
@@ -490,7 +490,7 @@ export default function Dashboard() {
   }, [(sse.bot as any)?.dailyLossHit, (sse.bot as any)?.profitLockHit]);
 
   useEffect(() => {
-    if (!sse.lastTrade || Notification.permission !== "granted") return;
+    if (!sse.lastTrade || !("Notification" in window) || Notification.permission !== "granted") return;
     if (sse.lastTrade.action === "closed") {
       const pnl: number = (sse.lastTrade as any).pnl ?? 0;
       const isWin = pnl > 0;
