@@ -2,7 +2,8 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   usersTable, tradesTable, signalLogTable, strategiesTable,
-  sessionPerformanceTable, systemSettingsTable, botActivityLogTable
+  sessionPerformanceTable, systemSettingsTable, botActivityLogTable,
+  backtestResultsTable
 } from "@workspace/db";
 import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth.js";
@@ -59,6 +60,7 @@ router.get("/dashboard", async (req, res) => {
         demoMode: user.demoMode === 1,
         stakeSize: user.stakeSize,
         maxDailyLoss: user.maxDailyLoss,
+        dailyProfitTarget: user.dailyProfitTarget,
       },
       botStatus: {
         isRunning: bot.isRunning, killSwitchActive: bot.killSwitchActive,
@@ -428,7 +430,7 @@ router.get("/candles", async (req, res) => {
   let pair = "R_75";
   if (userId) {
     try {
-      const user = await db.query.users.findFirst({ where: eq(usersTable.id, userId) });
+      const user = await db.query.usersTable.findFirst({ where: eq(usersTable.id, String(userId)) });
       pair = user?.activePair ?? "R_75";
     } catch { /* fall back to R_75 */ }
   }
@@ -660,11 +662,11 @@ router.get("/account-overview", async (req, res) => {
   }
 });
 
-// PATCH user settings (stake size, max daily loss)
+// PATCH user settings (stake size, max daily loss, daily profit target)
 router.patch("/settings", async (req, res) => {
   try {
     const userId = req.user!.userId;
-    const { stakeSize, maxDailyLoss } = req.body;
+    const { stakeSize, maxDailyLoss, dailyProfitTarget } = req.body;
     const update: Record<string, unknown> = {};
     if (stakeSize != null) {
       const s = Number(stakeSize);
@@ -675,6 +677,15 @@ router.patch("/settings", async (req, res) => {
       const m = Number(maxDailyLoss);
       if (isNaN(m) || m < 1 || m > 100) { res.status(400).json({ error: "maxDailyLoss must be 1–100 (%)" }); return; }
       update.maxDailyLoss = m;
+    }
+    if (dailyProfitTarget !== undefined) {
+      if (dailyProfitTarget === null || dailyProfitTarget === "") {
+        update.dailyProfitTarget = null;
+      } else {
+        const t = Number(dailyProfitTarget);
+        if (isNaN(t) || t < 0.01 || t > 100000) { res.status(400).json({ error: "dailyProfitTarget must be 0.01–100000" }); return; }
+        update.dailyProfitTarget = t;
+      }
     }
     if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
     await db.update(usersTable).set(update).where(eq(usersTable.id, userId));
@@ -726,6 +737,40 @@ router.patch("/demo-mode", async (req, res) => {
     res.json({ demoMode: next === 1, message: next === 1 ? "Demo mode enabled" : "Demo mode disabled" });
   } catch (err) {
     logger.error({ err }, "Demo mode toggle error");
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Backtest summary — latest backtest result for the user's current strategy
+router.get("/backtest-summary", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const users = await db.select({ strategyId: usersTable.strategyId }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const strategyId = users[0]?.strategyId;
+    if (!strategyId) { res.json({ summary: null }); return; }
+
+    const results = await db.select().from(backtestResultsTable)
+      .where(eq(backtestResultsTable.strategyId, strategyId))
+      .orderBy(desc(backtestResultsTable.createdAt))
+      .limit(1);
+
+    const result = results[0];
+    if (!result) { res.json({ summary: null }); return; }
+
+    res.json({
+      summary: {
+        winRate: result.winRate,
+        profitFactor: result.profitFactor,
+        maxDrawdown: result.maxDrawdown,
+        totalTrades: result.totalTrades,
+        sharpeRatio: result.sharpeRatio,
+        totalPnl: result.totalPnl,
+        avgDurationMinutes: result.avgDurationMinutes,
+        createdAt: result.createdAt,
+      }
+    });
+  } catch (err) {
+    logger.error({ err }, "Backtest summary error");
     res.status(500).json({ error: "Server error" });
   }
 });

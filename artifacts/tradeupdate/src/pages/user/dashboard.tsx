@@ -16,7 +16,7 @@ import {
   Loader2, Power, Pause, LogOut, Home, BarChart2, List,
   Settings as SettingsIcon, TrendingUp, TrendingDown, Brain,
   X, ChevronRight, Eye, EyeOff, Link2, CheckCircle2,
-  Activity, Save, RefreshCw
+  Activity, Save, RefreshCw, Shield, Target, Bell, Zap, Award
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -82,6 +82,201 @@ function StatusBanner({ bot }: { bot: any }) {
   );
 }
 
+function RiskGaugeCard({ dailyPnl, maxDailyLossPct, balance, profitLockHit, dailyProfitTarget }: {
+  dailyPnl: number; maxDailyLossPct: number; balance: number; profitLockHit?: boolean; dailyProfitTarget?: number | null;
+}) {
+  const dailyStartBalance = Math.max(balance - dailyPnl, 1);
+  const dailyLossPct = dailyPnl < 0 ? (Math.abs(dailyPnl) / dailyStartBalance) * 100 : 0;
+  const limitPct = maxDailyLossPct > 0 ? Math.min(100, (dailyLossPct / maxDailyLossPct) * 100) : 0;
+  const gaugeColor = limitPct >= 80 ? "#FF4060" : limitPct >= 50 ? "#FFB347" : "#00D4A4";
+  const riskLevel = limitPct >= 80 ? "HIGH" : limitPct >= 50 ? "MODERATE" : "LOW";
+  const riskBadge = limitPct >= 80 ? "bg-accent-red/20 text-accent-red" : limitPct >= 50 ? "bg-yellow-500/20 text-yellow-400" : "bg-primary/20 text-primary";
+
+  const r = 48; const cx = 60; const cy = 58;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const ax = (a: number) => cx + r * Math.cos(toRad(a));
+  const ay = (a: number) => cy + r * Math.sin(toRad(a));
+  const endAngle = -180 + (180 * Math.min(limitPct, 100)) / 100;
+  const largeArc = limitPct > 50 ? 1 : 0;
+  const bgPath = `M ${ax(-180)} ${ay(-180)} A ${r} ${r} 0 0 1 ${ax(0)} ${ay(0)}`;
+  const fillPath = limitPct > 0 ? `M ${ax(-180)} ${ay(-180)} A ${r} ${r} 0 ${largeArc} 1 ${ax(endAngle)} ${ay(endAngle)}` : "";
+
+  return (
+    <Card className="bg-card border-border p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs font-medium text-text-secondary uppercase tracking-wide flex items-center gap-1.5">
+          <Shield className="w-3.5 h-3.5" /> Risk Gauge
+        </div>
+        <Badge className={`border-0 text-[10px] ${riskBadge}`}>{riskLevel} RISK</Badge>
+      </div>
+      <div className="flex items-center gap-4">
+        <div className="relative shrink-0">
+          <svg viewBox="0 0 120 66" className="w-[110px] h-[60px]">
+            <path d={bgPath} fill="none" stroke="#1C1F2E" strokeWidth="11" strokeLinecap="round" />
+            {limitPct > 0 && <path d={fillPath} fill="none" stroke={gaugeColor} strokeWidth="11" strokeLinecap="round" />}
+            <text x="60" y="54" textAnchor="middle" fill={gaugeColor} fontSize="13" fontWeight="bold" fontFamily="monospace">{limitPct.toFixed(0)}%</text>
+            <text x="60" y="64" textAnchor="middle" fill="#8890AA" fontSize="7" fontFamily="sans-serif">of limit used</text>
+          </svg>
+        </div>
+        <div className="flex-1 space-y-1.5 text-xs">
+          <div className="flex justify-between">
+            <span className="text-text-secondary">Today P&L</span>
+            <span className={`font-mono font-bold tabular-nums ${dailyPnl < 0 ? "text-accent-red" : dailyPnl > 0 ? "text-primary" : "text-text-secondary"}`}>
+              {dailyPnl >= 0 ? "+" : ""}${dailyPnl.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-secondary">Loss limit ({maxDailyLossPct}%)</span>
+            <span className="font-mono text-text-secondary tabular-nums">${((dailyStartBalance * maxDailyLossPct) / 100).toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-secondary">Drawdown</span>
+            <span className={`font-mono font-bold tabular-nums ${dailyLossPct > 3 ? "text-accent-red" : "text-text-secondary"}`}>{dailyLossPct.toFixed(1)}%</span>
+          </div>
+          {dailyProfitTarget && dailyProfitTarget > 0 && (
+            <div className="flex justify-between">
+              <span className="text-text-secondary">Profit target</span>
+              <span className={`font-mono tabular-nums ${profitLockHit ? "text-primary font-bold" : "text-text-secondary"}`}>
+                ${dailyProfitTarget.toFixed(2)}{profitLockHit ? " ✓" : ""}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ProfitLockBar({ dailyPnl, target, profitLockHit }: { dailyPnl: number; target: number; profitLockHit?: boolean }) {
+  const pct = target > 0 ? Math.min(100, Math.max(0, (dailyPnl / target) * 100)) : 0;
+  const isHit = profitLockHit || pct >= 100;
+  const barColor = isHit ? "#00D4A4" : pct >= 75 ? "#FFB347" : "#00D4A4";
+  return (
+    <Card className={`bg-card p-4 border transition-colors ${isHit ? "border-primary/50" : "border-border"}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary uppercase tracking-wide">
+          <Target className="w-3.5 h-3.5" /> Profit Lock
+        </div>
+        <div className="flex items-center gap-2">
+          {isHit && <Badge className="border-0 bg-primary/20 text-primary text-[10px]">🎯 TARGET HIT</Badge>}
+          <span className={`text-xs font-bold tabular-nums font-mono ${dailyPnl >= 0 ? "text-primary" : "text-accent-red"}`}>
+            {dailyPnl >= 0 ? "+" : ""}${dailyPnl.toFixed(2)} <span className="text-text-secondary font-normal">/ ${target.toFixed(2)}</span>
+          </span>
+        </div>
+      </div>
+      <div className="h-2.5 bg-border rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, backgroundColor: barColor }} />
+      </div>
+      <div className="flex justify-between text-[10px] text-text-secondary mt-1">
+        <span>$0</span>
+        <span>{pct.toFixed(0)}% of target</span>
+        <span>${target.toFixed(2)}</span>
+      </div>
+    </Card>
+  );
+}
+
+function BacktestSummaryCard({ summary }: { summary: any }) {
+  if (!summary) return null;
+  const runDate = summary.createdAt
+    ? new Date(summary.createdAt * 1000).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
+    : "—";
+  const pf = summary.profitFactor ?? 0;
+  const pfColor = pf >= 1.5 ? "text-primary" : pf >= 1 ? "text-yellow-400" : "text-accent-red";
+  return (
+    <Card className="bg-card border-border p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs font-medium text-text-secondary uppercase tracking-wide flex items-center gap-1.5">
+          <Award className="w-3.5 h-3.5" /> Strategy Backtest
+        </div>
+        <span className="text-[10px] text-text-secondary">{runDate}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center mb-3">
+        <div>
+          <div className="text-xl font-bold text-primary tabular-nums">{summary.winRate?.toFixed(1)}%</div>
+          <div className="text-[10px] text-text-secondary">Win Rate</div>
+        </div>
+        <div>
+          <div className={`text-xl font-bold tabular-nums ${pfColor}`}>{pf.toFixed(2)}</div>
+          <div className="text-[10px] text-text-secondary">Prof. Factor</div>
+        </div>
+        <div>
+          <div className="text-xl font-bold text-accent-red tabular-nums">{summary.maxDrawdown?.toFixed(1)}%</div>
+          <div className="text-[10px] text-text-secondary">Max DD</div>
+        </div>
+      </div>
+      <div className="pt-2 border-t border-border/50 flex justify-between text-[10px] text-text-secondary">
+        <span>{summary.totalTrades} trades simulated</span>
+        {summary.sharpeRatio != null && <span>Sharpe {summary.sharpeRatio?.toFixed(2)}</span>}
+        {summary.avgDurationMinutes != null && <span>Avg {summary.avgDurationMinutes?.toFixed(0)}m/trade</span>}
+      </div>
+      <p className="text-[10px] text-text-secondary/50 text-center mt-1.5">Reference only — past performance ≠ future results</p>
+    </Card>
+  );
+}
+
+interface DeepStats {
+  maxWinStreak: number; maxLossStreak: number;
+  avgWinDuration: number; avgLossDuration: number;
+  expectancy: number; avgWinLossRatio: number;
+  avgWin: number; avgLoss: number;
+  bestSession: { name: string; winRate: number } | null;
+  worstSession: { name: string; winRate: number } | null;
+  totalTrades: number;
+}
+
+function DeepStatsPanel({ stats }: { stats: DeepStats | null }) {
+  if (!stats || stats.totalTrades < 3) return null;
+  const expColor = stats.expectancy >= 0 ? "text-primary" : "text-accent-red";
+  return (
+    <Card className="bg-card border-border p-4">
+      <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-3 flex items-center gap-1.5">
+        <Zap className="w-3.5 h-3.5" /> Deep Stats
+      </div>
+      <div className="grid grid-cols-2 gap-2.5 text-xs">
+        <div className="bg-background rounded-lg p-2.5">
+          <div className="text-text-secondary mb-1">Avg Win / Loss</div>
+          <div className="font-bold text-sm">
+            <span className="text-primary">+${stats.avgWin.toFixed(2)}</span>
+            <span className="text-text-secondary"> / </span>
+            <span className="text-accent-red">${Math.abs(stats.avgLoss).toFixed(2)}</span>
+          </div>
+          <div className="text-text-secondary mt-0.5">{stats.avgWinLossRatio.toFixed(2)}:1 ratio</div>
+        </div>
+        <div className="bg-background rounded-lg p-2.5">
+          <div className="text-text-secondary mb-1">Expectancy / Trade</div>
+          <div className={`font-bold text-sm ${expColor}`}>{stats.expectancy >= 0 ? "+" : ""}${stats.expectancy.toFixed(2)}</div>
+          <div className="text-text-secondary mt-0.5">per closed trade</div>
+        </div>
+        <div className="bg-background rounded-lg p-2.5">
+          <div className="text-text-secondary mb-1">Best Streak Ever</div>
+          <div className="font-bold text-primary text-sm">+{stats.maxWinStreak}W</div>
+          <div className="text-accent-red mt-0.5">-{stats.maxLossStreak}L worst</div>
+        </div>
+        <div className="bg-background rounded-lg p-2.5">
+          <div className="text-text-secondary mb-1">Avg Hold Time</div>
+          <div className="font-bold text-primary text-sm">{stats.avgWinDuration.toFixed(0)}m <span className="text-[10px] font-normal text-text-secondary">winners</span></div>
+          <div className="text-accent-red mt-0.5">{stats.avgLossDuration.toFixed(0)}m <span className="text-[10px] font-normal text-text-secondary">losers</span></div>
+        </div>
+        {stats.bestSession && (
+          <div className="bg-background rounded-lg p-2.5">
+            <div className="text-text-secondary mb-1">Best Session</div>
+            <div className="font-bold text-primary text-sm truncate">{stats.bestSession.name}</div>
+            <div className="text-text-secondary mt-0.5">{stats.bestSession.winRate.toFixed(0)}% win rate</div>
+          </div>
+        )}
+        {stats.worstSession && (
+          <div className="bg-background rounded-lg p-2.5">
+            <div className="text-text-secondary mb-1">Worst Session</div>
+            <div className="font-bold text-accent-red text-sm truncate">{stats.worstSession.name}</div>
+            <div className="text-text-secondary mt-0.5">{stats.worstSession.winRate.toFixed(0)}% win rate</div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 export default function Dashboard() {
   const { data: user } = useGetMe();
   const [activeTab, setActiveTab] = useState("home");
@@ -114,6 +309,15 @@ export default function Dashboard() {
   // Pair selection
   const [pairSwitching, setPairSwitching] = useState(false);
   const [pairSwitchMsg, setPairSwitchMsg] = useState<string | null>(null);
+
+  // Profit lock target
+  const [profitTargetInput, setProfitTargetInput] = useState("");
+
+  // Browser push notifications
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>("default");
+
+  // Backtest summary
+  const [backtestSummary, setBacktestSummary] = useState<any>(null);
 
   // Activity log history (fetched on first open)
   const [activityHistory, setActivityHistory] = useState<Array<{message: string; level: string; createdAt: number}>>([]);
@@ -161,9 +365,11 @@ export default function Dashboard() {
   };
 
   const handleSaveSettings = async () => {
-    const body: Record<string, number> = {};
+    const body: Record<string, number | null> = {};
     if (stakeInput) body.stakeSize = parseFloat(stakeInput);
     if (maxLossInput) body.maxDailyLoss = parseFloat(maxLossInput);
+    if (profitTargetInput) body.dailyProfitTarget = parseFloat(profitTargetInput);
+    else if (profitTargetInput === "") body.dailyProfitTarget = null;
     if (Object.keys(body).length === 0) return;
     setSettingsSaving(true);
     try {
@@ -248,8 +454,52 @@ export default function Dashboard() {
     const u = dashboardData.user as any;
     if (u.stakeSize != null && stakeInput === "") setStakeInput(String(u.stakeSize));
     if (u.maxDailyLoss != null && maxLossInput === "") setMaxLossInput(String(u.maxDailyLoss));
+    if (u.dailyProfitTarget != null && profitTargetInput === "") setProfitTargetInput(String(u.dailyProfitTarget));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboardData?.user]);
+
+  // Init notification permission state
+  useEffect(() => {
+    if ("Notification" in window) setNotifPermission(Notification.permission);
+  }, []);
+
+  // Fetch backtest summary for user's strategy
+  useEffect(() => {
+    fetch("/api/user/backtest-summary", { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.summary) setBacktestSummary(d.summary); })
+      .catch(() => {});
+  }, [dashboardData?.user?.strategyId]);
+
+  // Push notifications on bot events
+  const prevDailyLossHit = useRef(false);
+  const prevProfitLockHit = useRef(false);
+  useEffect(() => {
+    if (Notification.permission !== "granted") return;
+    const bot = sse.bot as any;
+    const hitLoss = !!bot?.dailyLossHit;
+    const hitProfit = !!bot?.profitLockHit;
+    if (hitLoss && !prevDailyLossHit.current) {
+      new Notification("⚠️ Daily Loss Limit Hit", { body: "Bot has been automatically stopped to protect your capital.", icon: "/favicon.ico" });
+    }
+    if (hitProfit && !prevProfitLockHit.current) {
+      new Notification("🎯 Profit Target Reached!", { body: `Daily target hit — gains locked in at +$${bot?.dailyPnl?.toFixed(2) ?? "0.00"}`, icon: "/favicon.ico" });
+    }
+    prevDailyLossHit.current = hitLoss;
+    prevProfitLockHit.current = hitProfit;
+  }, [(sse.bot as any)?.dailyLossHit, (sse.bot as any)?.profitLockHit]);
+
+  useEffect(() => {
+    if (!sse.lastTrade || Notification.permission !== "granted") return;
+    if (sse.lastTrade.action === "closed") {
+      const pnl: number = (sse.lastTrade as any).pnl ?? 0;
+      const isWin = pnl > 0;
+      new Notification(isWin ? `✅ Trade Won +$${pnl.toFixed(2)}` : `❌ Trade Lost $${Math.abs(pnl).toFixed(2)}`, {
+        body: `${(sse.lastTrade as any).direction ?? ""} ${(sse.lastTrade as any).symbol ?? ""} — tap to view`.trim(),
+        icon: "/favicon.ico",
+      });
+    }
+  }, [sse.lastTrade]);
 
   // Fetch activity log history when activity tab opens
   useEffect(() => {
@@ -379,6 +629,50 @@ export default function Dashboard() {
         avgPnl: s.trades > 0 ? Math.round((s.totalPnl / s.trades) * 100) / 100 : 0,
         totalPnl: Math.round(s.totalPnl * 100) / 100,
       }));
+  }, [equityTradesData]);
+
+  // Deep stats — computed client-side from already-fetched trade history
+  const deepStats = useMemo((): DeepStats | null => {
+    const allTrades = equityTradesData?.trades ?? [];
+    const closed = [...allTrades].filter(t => t.status === "closed").sort((a, b) => (a.openedAt ?? 0) - (b.openedAt ?? 0));
+    if (closed.length < 3) return null;
+    const wins = closed.filter(t => (t.pnl ?? 0) > 0);
+    const losses = closed.filter(t => (t.pnl ?? 0) <= 0);
+    const winRate = closed.length > 0 ? wins.length / closed.length : 0;
+    const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + (t.pnl ?? 0), 0) / wins.length : 0;
+    const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + (t.pnl ?? 0), 0) / losses.length : 0;
+    let maxWinStreak = 0, maxLossStreak = 0, curWin = 0, curLoss = 0;
+    for (const t of closed) {
+      if ((t.pnl ?? 0) > 0) { curWin++; curLoss = 0; maxWinStreak = Math.max(maxWinStreak, curWin); }
+      else { curLoss++; curWin = 0; maxLossStreak = Math.max(maxLossStreak, curLoss); }
+    }
+    const avgWinDuration = wins.length > 0 ? wins.reduce((s, t) => s + ((t as any).durationMinutes ?? 0), 0) / wins.length : 0;
+    const avgLossDuration = losses.length > 0 ? losses.reduce((s, t) => s + ((t as any).durationMinutes ?? 0), 0) / losses.length : 0;
+    const expectancy = (winRate * avgWin) + ((1 - winRate) * avgLoss);
+    const avgWinLossRatio = Math.abs(avgLoss) > 0 ? avgWin / Math.abs(avgLoss) : 0;
+    const sessionMap: Record<string, { wins: number; trades: number }> = {};
+    for (const t of closed) {
+      const sn = t.sessionName ?? "Unknown";
+      if (!sessionMap[sn]) sessionMap[sn] = { wins: 0, trades: 0 };
+      sessionMap[sn].trades++;
+      if ((t.pnl ?? 0) > 0) sessionMap[sn].wins++;
+    }
+    const sessions = Object.entries(sessionMap)
+      .filter(([, s]) => s.trades >= 3)
+      .map(([name, s]) => ({ name, winRate: (s.wins / s.trades) * 100 }))
+      .sort((a, b) => b.winRate - a.winRate);
+    return {
+      maxWinStreak, maxLossStreak,
+      avgWinDuration: Math.round(avgWinDuration * 10) / 10,
+      avgLossDuration: Math.round(avgLossDuration * 10) / 10,
+      expectancy: Math.round(expectancy * 100) / 100,
+      avgWinLossRatio: Math.round(avgWinLossRatio * 100) / 100,
+      avgWin: Math.round(avgWin * 100) / 100,
+      avgLoss: Math.round(avgLoss * 100) / 100,
+      bestSession: sessions[0] ?? null,
+      worstSession: sessions[sessions.length - 1] ?? null,
+      totalTrades: closed.length,
+    };
   }, [equityTradesData]);
 
   // Whether the account is profitable overall
@@ -868,6 +1162,34 @@ export default function Dashboard() {
                 </div>
               </Card>
             )}
+
+            {/* ── Risk Gauge Card ── */}
+            <RiskGaugeCard
+              dailyPnl={botData?.dailyPnl ?? 0}
+              maxDailyLossPct={(dashboardData?.user as any)?.maxDailyLoss ?? 5}
+              balance={dashboardData?.user?.accountBalance ?? 100}
+              profitLockHit={!!(botData as any)?.profitLockHit}
+              dailyProfitTarget={(dashboardData?.user as any)?.dailyProfitTarget}
+            />
+
+            {/* ── Profit Lock Bar — only shown when a target is set ── */}
+            {(() => {
+              const target = (dashboardData?.user as any)?.dailyProfitTarget;
+              return target && target > 0 ? (
+                <ProfitLockBar
+                  dailyPnl={botData?.dailyPnl ?? 0}
+                  target={target}
+                  profitLockHit={!!(botData as any)?.profitLockHit}
+                />
+              ) : null;
+            })()}
+
+            {/* ── Backtest Summary Card ── */}
+            <BacktestSummaryCard summary={backtestSummary} />
+
+            {/* ── Deep Stats Panel ── */}
+            <DeepStatsPanel stats={deepStats} />
+
           </div>
         )}
 
@@ -1292,8 +1614,8 @@ export default function Dashboard() {
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="text-sm font-medium">{trade.direction}</span>
                               {isOpen && <Badge className="h-4 text-[10px] bg-primary/20 text-primary border-0 px-1">LIVE</Badge>}
-                              {trade.isCopyTrade === 1 && <Badge className="h-4 text-[10px] bg-yellow-500/20 text-yellow-400 border-0 px-1">COPY</Badge>}
-                              {trade.isPaper === 1 && <Badge className="h-4 text-[10px] bg-text-secondary/20 text-text-secondary border-0 px-1">PAPER</Badge>}
+                              {(trade as any).isCopyTrade === 1 && <Badge className="h-4 text-[10px] bg-yellow-500/20 text-yellow-400 border-0 px-1">COPY</Badge>}
+                              {(trade as any).isPaper === 1 && <Badge className="h-4 text-[10px] bg-text-secondary/20 text-text-secondary border-0 px-1">PAPER</Badge>}
                             </div>
                             <div className="text-xs text-text-secondary font-mono">
                               {trade.entryPrice?.toFixed(2) ?? "—"} → {trade.exitPrice?.toFixed(2) ?? "open"}
@@ -1314,7 +1636,7 @@ export default function Dashboard() {
                           {new Date((trade.openedAt || 0) * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                           {trade.sessionName ? ` · ${trade.sessionName}` : ""}
                         </span>
-                        {trade.durationMinutes != null && <span>{trade.durationMinutes}m</span>}
+                        {(trade as any).durationMinutes != null && <span>{(trade as any).durationMinutes}m</span>}
                       </div>
                     </Card>
                   );
@@ -1629,6 +1951,20 @@ export default function Dashboard() {
                   />
                   <p className="text-[11px] text-text-secondary mt-1">Overrides profile default</p>
                 </div>
+                <div>
+                  <label className="text-xs text-text-secondary block mb-1.5 flex items-center gap-1">
+                    <Target className="w-3 h-3" /> Daily Profit Target ($)
+                  </label>
+                  <Input
+                    type="number"
+                    value={profitTargetInput}
+                    onChange={(e) => setProfitTargetInput(e.target.value)}
+                    placeholder="e.g. 50 (leave blank to disable)"
+                    className="bg-background border-border focus-visible:ring-primary"
+                    min="0.01" step="0.5"
+                  />
+                  <p className="text-[11px] text-text-secondary mt-1">Bot auto-pauses when daily P&amp;L reaches this — leave blank to disable</p>
+                </div>
                 <div className="flex items-center justify-between py-1">
                   <div>
                     <p className="text-sm font-medium">Demo Mode</p>
@@ -1660,6 +1996,51 @@ export default function Dashboard() {
                 </Button>
               </div>
             </Card>
+
+            {/* Push Notifications Card */}
+            {"Notification" in window && (
+              <Card className="bg-card border-border p-4 space-y-3">
+                <div className="text-xs font-medium text-text-secondary uppercase tracking-wide flex items-center gap-1.5">
+                  <Bell className="w-3.5 h-3.5" /> Push Notifications
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Trade &amp; Bot Alerts</p>
+                    <p className="text-[11px] text-text-secondary">Get notified when trades close or bot stops</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={notifPermission === "denied"}
+                    className={`min-w-[80px] border-border ${
+                      notifPermission === "granted"
+                        ? "text-primary border-primary/40 bg-primary/5"
+                        : notifPermission === "denied"
+                        ? "text-accent-red border-accent-red/30 opacity-60"
+                        : "text-text-secondary"
+                    }`}
+                    onClick={async () => {
+                      if (notifPermission === "granted") {
+                        setNotifPermission("default");
+                        return;
+                      }
+                      if ("Notification" in window) {
+                        const perm = await Notification.requestPermission();
+                        setNotifPermission(perm);
+                      }
+                    }}
+                  >
+                    {notifPermission === "granted" ? "ON" : notifPermission === "denied" ? "BLOCKED" : "Enable"}
+                  </Button>
+                </div>
+                {notifPermission === "denied" && (
+                  <p className="text-[10px] text-accent-red">Blocked in browser — reset in site settings to enable</p>
+                )}
+                {notifPermission === "granted" && (
+                  <p className="text-[10px] text-primary">Active — you'll receive alerts for trade closes, loss limit, and profit target hits</p>
+                )}
+              </Card>
+            )}
 
             <Button
               variant="outline"

@@ -31,6 +31,7 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "catalog:",
+    "@types/nodemailer": "^8.0.1",
     "@types/ws": "^8.18.1",
     "esbuild": "0.27.3",
     "esbuild-plugin-pino": "^2.3.3",

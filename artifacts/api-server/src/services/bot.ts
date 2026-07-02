@@ -70,6 +70,7 @@ export interface BotState {
   capitalPreservationMode: boolean;
   hardStopped: boolean;
   microStakeRecoveryMode: boolean;
+  profitLockHit: boolean;
 }
 
 interface OpenTrade {
@@ -1029,6 +1030,22 @@ class BotManager {
     state.pauseReason = null;
     state.v10PrecisionCooldownUntil = now + 3 * 60;
 
+    // CHECK — Profit Lock (daily profit target auto-pause)
+    if (state.dailyPnl > 0) {
+      try {
+        const ptRows = await db.select({ dailyProfitTarget: usersTable.dailyProfitTarget }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+        const target = ptRows[0]?.dailyProfitTarget;
+        if (target && target > 0 && state.dailyPnl >= target) {
+          state.profitLockHit = true;
+          state.isRunning = false;
+          state.pauseReason = `Profit target $${target.toFixed(2)} reached — gains locked in`;
+          this.broadcastToUser(userId, "alert", { level: "success", message: `🎯 Profit lock! Daily target +$${target.toFixed(2)} hit — bot paused` });
+          this.broadcastBotEvent(userId, state);
+          this.logActivity(userId, `Profit lock: daily P&L +$${state.dailyPnl.toFixed(2)} reached target $${target.toFixed(2)} — bot paused`, "win").catch(() => {});
+        }
+      } catch { /* non-fatal */ }
+    }
+
     // Update user balance
     const users = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
     const user = users[0];
@@ -1834,6 +1851,7 @@ class BotManager {
       spikeDetected: state.spikeDetected,
       consolidation: state.consolidationDetected,
       dailyLossHit: state.dailyLossHit,
+      profitLockHit: state.profitLockHit,
       currentDrawdown: state.currentDrawdown,
       dailyPnl: state.dailyPnl,
       currentScore: state.currentScore,
@@ -1865,6 +1883,7 @@ class BotManager {
         v10CooldownUntil: null, v10CleanlinessScore: null, v10TrendRisk: false, v10Adx: null,
         v10PrecisionCooldownUntil: null,
         capitalPreservationMode: false, hardStopped: false, microStakeRecoveryMode: false,
+        profitLockHit: false,
       });
     }
     return this.bots.get(userId)!;
@@ -1877,6 +1896,7 @@ class BotManager {
       state.killSwitchActive = false;
       state.pauseReason = null;
       state.dailyLossHit = false;
+      state.profitLockHit = false;
       this.broadcastBotEvent(userId, state);
       this.logActivity(userId, "Bot started", "info").catch(() => {});
       this.writeHeartbeat(userId).catch(() => {});

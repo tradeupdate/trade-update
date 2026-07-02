@@ -31,6 +31,7 @@ export const usersTable = pgTable("users", {
   stakeSize: real("stake_size"),
   maxDailyLoss: real("max_daily_loss"),
   botHardStopped: integer("bot_hard_stopped").default(0),
+  dailyProfitTarget: real("daily_profit_target"),
   autoRestartAt: integer("auto_restart_at"),
   lastContractSync: integer("last_contract_sync"),
   lastKeepAlivePing: integer("last_keep_alive_ping"),
