@@ -129,7 +129,7 @@ async function seed() {
       id: randomUUID(), username: "Clean10test", email: "test@tradeupdate.app",
       passwordHash: testHash, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 0, createdAt: now, strategyId: sniperStrategyId,
       activePair: "R_75",
     });
@@ -146,7 +146,7 @@ async function seed() {
       id: randomUUID(), username: "swingtest100", email: "swingtest@tradeupdate.app",
       passwordHash: swingHash, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 0, createdAt: now, strategyId: swingStrategyId,
       activePair: "R_75",
     });
@@ -163,7 +163,7 @@ async function seed() {
       id: randomUUID(), username: "reversaltest100", email: "reversaltest@tradeupdate.app",
       passwordHash: reversalHash, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 0, createdAt: now, strategyId: reversalStrategyId,
       activePair: "R_75",
     });
@@ -180,7 +180,7 @@ async function seed() {
       id: randomUUID(), username: "v10test100", email: "v10test@tradeupdate.app",
       passwordHash: v10Hash, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 0, createdAt: now, strategyId: v10StrategyId,
       activePair: "R_10",
     });
@@ -197,7 +197,7 @@ async function seed() {
       id: randomUUID(), username: "v10precision100", email: "v10precision@tradeupdate.app",
       passwordHash: v10pHash, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 0, createdAt: now, strategyId: v10PrecisionStrategyId,
       activePair: "R_10",
     });

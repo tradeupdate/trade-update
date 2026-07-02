@@ -115,7 +115,7 @@ router.post("/users", async (req, res) => {
       id, username, email, passwordHash, role: role || "user", status: "active",
       isActive: 1, tradingProfile: tradingProfile || "safe",
       tradingMode: tradingMode || "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 1, createdAt: now, approvedAt: now, approvedBy: req.user!.userId,
     });
 
@@ -202,7 +202,7 @@ router.post("/pending-signups/:id/approve", async (req, res) => {
       id: randomUUID(), username: s.username, email: s.email, country: s.country,
       passwordHash: s.passwordHash!, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 5000, peakBalance: 5000, dailyStartBalance: 5000,
+      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
       forcePasswordChange: 1, createdAt: now, approvedAt: now, approvedBy: req.user!.userId,
     });
 
@@ -413,7 +413,7 @@ router.post("/backtest/run", async (req, res) => {
     const to = dateTo ?? now;
 
     const { sessionFilterEnabled, sessionStartHour, sessionEndHour, startingBalance } = req.body;
-    const backtestStartBalance = Number(startingBalance) > 0 ? Number(startingBalance) : 5000;
+    const backtestStartBalance = Number(startingBalance) > 0 ? Number(startingBalance) : 100;
     const config = {
       scoreThreshold: strategy.scoreThreshold ?? 16,
       maxRiskPercent: strategy.maxRiskPercent ?? 1.0,
@@ -534,7 +534,7 @@ router.post("/backtest/run", async (req, res) => {
 // Backtest — SSE streaming endpoint (same logic, progress events via SSE)
 router.post("/backtest/stream", async (req, res) => {
   const { strategyId, dateFrom, dateTo, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour, startingBalance } = req.body;
-  const backtestStartBalance = Number(startingBalance) > 0 ? Number(startingBalance) : 5000;
+  const backtestStartBalance = Number(startingBalance) > 0 ? Number(startingBalance) : 100;
   if (!strategyId) { res.status(400).json({ error: "strategyId required" }); return; }
 
   res.setHeader("Content-Type", "text/event-stream");

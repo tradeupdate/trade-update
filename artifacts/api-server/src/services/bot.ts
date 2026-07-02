@@ -260,7 +260,7 @@ class BotManager {
     // (consolidationDetected is set from score result)
 
     // CHECK 8 — Daily loss cap
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const peak = user.peakBalance || balance;
     if (state.dailyStartBalance === 0) {
       state.dailyStartBalance = balance;
@@ -561,7 +561,7 @@ class BotManager {
       return;
     }
 
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const riskPct = (strategy.maxRiskPercent ?? 1.0) / 100;
     const stage1Stake = Math.max(0.5, Math.round(balance * riskPct * 0.5 * 100) / 100);
     const slPrice = isBuy ? consolidation.low - consolidation.size * 0.1 : consolidation.high + consolidation.size * 0.1;
@@ -700,7 +700,7 @@ class BotManager {
     // Execute reversal trade
     state.pauseReason = null;
     const isBuy = result.direction === "BUY";
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const riskPct = (strategy.maxRiskPercent ?? 1.0) / 100;
     let stake = result.isPremium
       ? Math.max(0.5, Math.round(balance * riskPct * 1.25 * 100) / 100)
@@ -877,7 +877,7 @@ class BotManager {
 
     // Execute V10 Precision trade
     state.pauseReason = null;
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const riskPct = (strategy.maxRiskPercent ?? 0.5) / 100;
     let stake = balance * riskPct;
     if (state.recoveryModeActive) stake *= 0.5;
@@ -1033,7 +1033,7 @@ class BotManager {
     const users = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
     const user = users[0];
     if (user) {
-      const newBalance = Math.round(((user.accountBalance || 5000) + pnl) * 100) / 100;
+      const newBalance = Math.round(((user.accountBalance || 100) + pnl) * 100) / 100;
       const newPeak = Math.max(user.peakBalance || newBalance, newBalance);
       state.currentDrawdown = (newPeak - newBalance) / newPeak;
       state.peakBalance = newPeak;
@@ -1150,7 +1150,7 @@ class BotManager {
 
     // Execute V10 trade
     state.pauseReason = null;
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const riskPct = (strategy.maxRiskPercent ?? 1.0) / 100;
     let stake = user.stakeSize != null && user.stakeSize > 0
       ? user.stakeSize
@@ -1226,7 +1226,7 @@ class BotManager {
   }
 
   private async executeTrade(userId: string, user: any, strategy: any, result: ScoreResult, sessionName: string | null, state: BotState) {
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const profile = user.tradingProfile || "safe";
     let stake: number;
     if (user.stakeSize != null && user.stakeSize > 0) {
@@ -1611,7 +1611,7 @@ class BotManager {
     const users = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
     const user = users[0];
     if (user) {
-      const newBalance = Math.round(((user.accountBalance || 5000) + pnl) * 100) / 100;
+      const newBalance = Math.round(((user.accountBalance || 100) + pnl) * 100) / 100;
       const newPeak = Math.max(user.peakBalance || newBalance, newBalance);
       state.currentDrawdown = (newPeak - newBalance) / newPeak;
       state.peakBalance = newPeak;

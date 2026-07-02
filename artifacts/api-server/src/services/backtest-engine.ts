@@ -415,7 +415,7 @@ export async function runDeterministicBacktest(
   dateTo: number,
   runBy: string,
   forceRefresh = false,
-  startingBalance = 5000,
+  startingBalance = 100,
   onProgress?: ProgressCallback,
 ): Promise<BacktestRunResult> {
   const runId = `BT_${Date.now()}_${runBy}`;

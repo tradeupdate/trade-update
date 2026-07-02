@@ -153,7 +153,7 @@ router.get("/stats", async (req, res) => {
 
     // Build equity curve
     const sorted = [...allTrades].sort((a, b) => (a.openedAt || 0) - (b.openedAt || 0));
-    let running = 5000;
+    let running = 100;
     const equityCurve = sorted.map(t => {
       running += (t.pnl || 0);
       return {
@@ -485,7 +485,7 @@ router.get("/stream", async (req, res) => {
       const u = rows[0];
       const state = botManager.get(userId);
       if (!u) return;
-      const balance = u.accountBalance || 5000;
+      const balance = u.accountBalance || 100;
       const peak = u.peakBalance || balance;
       const drawdown = (peak - balance) / peak;
       botManager.broadcastToUser(userId, "stats", {
@@ -582,7 +582,7 @@ router.get("/account-overview", async (req, res) => {
     const user = rows[0];
     if (!user) { res.status(404).json({ error: "Not found" }); return; }
     const state = botManager.get(userId);
-    const balance = user.accountBalance || 5000;
+    const balance = user.accountBalance || 100;
     const openPnl = state?.openTrade?.pnl || 0;
     res.json({
       balance,
