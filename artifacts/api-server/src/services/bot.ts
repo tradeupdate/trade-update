@@ -4,7 +4,7 @@ import {
   adaptiveWeightsTable, sessionPerformanceTable, systemSettingsTable,
   botActivityLogTable, systemErrorLogTable, botInstancesTable, authLogTable
 } from "@workspace/db";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, sql, desc, lt } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { derivService, placePrecisionLiveContract, fetchDerivBalance } from "./deriv.js";
 import type { DerivContract, PrecisionSettlementResult } from "./deriv.js";
@@ -19,6 +19,7 @@ import {
 import { scoreReversal, type ReversalScoreResult } from "./reversal-scoring.js";
 import { getCurrentSession, getNextSession, isInSession, SESSIONS } from "./sessions.js";
 import { logger } from "../lib/logger.js";
+import { sendDailySummaryEmail, type DailySummaryStats } from "./email.js";
 
 export interface BotState {
   isRunning: boolean;
@@ -2133,6 +2134,120 @@ class BotManager {
     scheduleNext();
     const hrs = (msUntilMidnightUTC() / 3600000).toFixed(1);
     logger.info({ hoursUntilMidnight: hrs }, "Daily compound scheduled for midnight UTC");
+  }
+
+  scheduleDailySummary() {
+    const msUntilMidnightUTC = () => {
+      const now = new Date();
+      const midnight = new Date();
+      midnight.setUTCHours(24, 0, 0, 0);
+      return midnight.getTime() - now.getTime();
+    };
+    const scheduleNext = () => {
+      setTimeout(async () => {
+        try {
+          await this.sendDailySummaries();
+        } catch (err) { logger.error({ err }, "Daily summary batch error"); }
+        scheduleNext();
+      }, msUntilMidnightUTC());
+    };
+    scheduleNext();
+    logger.info("Daily summary emails scheduled for midnight UTC");
+  }
+
+  private async sendDailySummaries() {
+    const now = Math.floor(Date.now() / 1000);
+    const since = now - 86400;
+
+    const users = await db.select({
+      id: usersTable.id,
+      username: usersTable.username,
+      email: usersTable.email,
+      accountBalance: usersTable.accountBalance,
+      strategyId: usersTable.strategyId,
+      isActive: usersTable.isActive,
+      approvedAt: usersTable.approvedAt,
+    }).from(usersTable)
+      .where(and(eq(usersTable.isActive, 1), sql`${usersTable.approvedAt} is not null`));
+
+    for (const user of users) {
+      try {
+        if (!user.email) continue;
+
+        const trades = await db.select({
+          pnl: tradesTable.pnl,
+          direction: tradesTable.direction,
+          sessionName: tradesTable.sessionName,
+          openedAt: tradesTable.openedAt,
+        }).from(tradesTable)
+          .where(and(
+            eq(tradesTable.userId, user.id),
+            eq(tradesTable.status, "closed"),
+            gte(tradesTable.openedAt, since),
+            lt(tradesTable.openedAt, now),
+          ))
+          .orderBy(desc(tradesTable.openedAt));
+
+        if (trades.length === 0) continue;
+
+        const wins = trades.filter(t => (t.pnl ?? 0) > 0);
+        const losses = trades.filter(t => (t.pnl ?? 0) <= 0);
+        const totalPnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+        const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
+
+        const sorted = [...trades].sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0));
+        const bestTrade = sorted[0] && (sorted[0].pnl ?? 0) > 0
+          ? { direction: sorted[0].direction ?? "—", pnl: sorted[0].pnl ?? 0 }
+          : null;
+        const worstTrade = sorted[sorted.length - 1] && (sorted[sorted.length - 1].pnl ?? 0) < 0
+          ? { direction: sorted[sorted.length - 1].direction ?? "—", pnl: sorted[sorted.length - 1].pnl ?? 0 }
+          : null;
+
+        const sessionMap: Record<string, { pnl: number; wins: number; total: number }> = {};
+        for (const t of trades) {
+          const sn = t.sessionName ?? "Other";
+          if (!sessionMap[sn]) sessionMap[sn] = { pnl: 0, wins: 0, total: 0 };
+          sessionMap[sn].pnl += t.pnl ?? 0;
+          sessionMap[sn].total++;
+          if ((t.pnl ?? 0) > 0) sessionMap[sn].wins++;
+        }
+        const sessions = Object.entries(sessionMap)
+          .map(([name, s]) => ({ name, ...s }))
+          .sort((a, b) => b.total - a.total);
+
+        let strategyName = "Default";
+        if (user.strategyId) {
+          try {
+            const strats = await db.select({ name: strategiesTable.name })
+              .from(strategiesTable).where(eq(strategiesTable.id, user.strategyId)).limit(1);
+            if (strats[0]) strategyName = strats[0].name;
+          } catch { /* non-fatal */ }
+        }
+
+        const dateStr = new Date(since * 1000).toLocaleDateString("en-US", {
+          weekday: "short", month: "short", day: "numeric", timeZone: "UTC",
+        });
+
+        const stats: DailySummaryStats = {
+          date: dateStr,
+          totalPnl: Math.round(totalPnl * 100) / 100,
+          tradeCount: trades.length,
+          winCount: wins.length,
+          lossCount: losses.length,
+          winRate: Math.round(winRate * 10) / 10,
+          bestTrade,
+          worstTrade,
+          sessions,
+          strategyName,
+          accountBalance: user.accountBalance ?? 0,
+        };
+
+        await sendDailySummaryEmail(user.email, user.username, stats);
+        logger.info({ userId: user.id, trades: trades.length, totalPnl }, "Daily summary email sent");
+      } catch (err) {
+        logger.error({ err, userId: user.id }, "Failed to send daily summary for user");
+      }
+    }
   }
 
   // ── Item 7: Conviction Sizing ─────────────────────────────────────────

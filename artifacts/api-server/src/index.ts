@@ -35,6 +35,7 @@ app.listen(port, async (err) => {
 
   // Item 6 — Compound: daily midnight UTC
   botManager.scheduleDailyCompound();
+  botManager.scheduleDailySummary();
 
   // Item 2 — Contract sync on Deriv reconnection for all live users
   derivService.onReconnect(async () => {
