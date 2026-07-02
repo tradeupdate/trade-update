@@ -16,7 +16,7 @@ import {
   Loader2, Power, Pause, LogOut, Home, BarChart2, List,
   Settings as SettingsIcon, TrendingUp, TrendingDown, Brain,
   X, ChevronRight, Eye, EyeOff, Link2, CheckCircle2,
-  Activity, Save
+  Activity, Save, RefreshCw
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -100,6 +100,10 @@ export default function Dashboard() {
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
 
+  // Balance sync
+  const [balanceSyncing, setBalanceSyncing] = useState(false);
+  const [lastSyncedBalance, setLastSyncedBalance] = useState<number | null>(null);
+
   // Bot settings form
   const [stakeInput, setStakeInput] = useState("");
   const [maxLossInput, setMaxLossInput] = useState("");
@@ -126,13 +130,33 @@ export default function Dashboard() {
         body: JSON.stringify({ token: derivTokenInput.trim() }),
       });
       if (res.ok) {
+        const data = await res.json();
         setTokenSaved(true);
         setDerivTokenInput("");
+        setShowTokenInput(false);
+        if (data.derivBalance != null) setLastSyncedBalance(data.derivBalance);
         queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
         setTimeout(() => setTokenSaved(false), 3000);
       }
     } finally {
       setTokenSaving(false);
+    }
+  };
+
+  const handleSyncBalance = async () => {
+    setBalanceSyncing(true);
+    try {
+      const res = await fetch("/api/user/deriv/sync-balance", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setLastSyncedBalance(data.derivBalance);
+        queryClient.invalidateQueries({ queryKey: getGetUserDashboardQueryKey() });
+      }
+    } finally {
+      setBalanceSyncing(false);
     }
   };
 
@@ -616,10 +640,25 @@ export default function Dashboard() {
             {/* Stats grid */}
             <div className="grid grid-cols-2 gap-3">
               <Card className="bg-card border-border p-4">
-                <div className="text-xs text-text-secondary mb-1">Balance</div>
-                <div className="text-xl font-bold tabular-nums">
-                  ${(dashboardData?.user?.accountBalance ?? 0).toFixed(2)}
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-text-secondary">Balance</div>
+                  {dashboardData?.user?.tradingMode !== "paper" && dashboardData?.user?.hasDerivToken && (
+                    <button
+                      onClick={handleSyncBalance}
+                      disabled={balanceSyncing}
+                      className="text-text-secondary hover:text-primary transition-colors disabled:opacity-50"
+                      title="Sync balance from Deriv"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${balanceSyncing ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
                 </div>
+                <div className="text-xl font-bold tabular-nums">
+                  ${(lastSyncedBalance ?? dashboardData?.user?.accountBalance ?? 0).toFixed(2)}
+                </div>
+                {lastSyncedBalance != null && (
+                  <div className="text-[10px] text-primary mt-0.5">● synced from Deriv</div>
+                )}
               </Card>
               <Card className="bg-card border-border p-4">
                 <div className="text-xs text-text-secondary mb-1">Today P&L</div>
@@ -1462,6 +1501,36 @@ export default function Dashboard() {
                 </div>
               )}
             </Card>
+
+            {/* Sync Deriv Balance — only shown for live users with a token */}
+            {dashboardData?.user?.hasDerivToken && dashboardData?.user?.tradingMode !== "paper" && (
+              <Card className="p-4 bg-card border border-border rounded-xl">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-bold">Deriv Balance</h3>
+                  {lastSyncedBalance != null && (
+                    <Badge className="border-0 bg-primary/20 text-primary text-xs">
+                      ${lastSyncedBalance.toFixed(2)}
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-xs text-text-secondary mb-3">
+                  Pull your current balance directly from Deriv to keep the bot in sync.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full border-border text-foreground hover:bg-border gap-2"
+                  onClick={handleSyncBalance}
+                  disabled={balanceSyncing}
+                >
+                  {balanceSyncing ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Syncing...</>
+                  ) : (
+                    <><RefreshCw className="w-4 h-4" /> Sync Balance from Deriv</>
+                  )}
+                </Button>
+              </Card>
+            )}
 
             <Card className="p-4 bg-card border border-border rounded-xl">
               <h3 className="font-bold mb-3">Connection</h3>

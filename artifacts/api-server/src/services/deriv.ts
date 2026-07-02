@@ -533,6 +533,55 @@ class DerivService {
 
 export const derivService = new DerivService();
 
+// ── One-shot Deriv balance fetcher ────────────────────────────────────────────
+// Opens a temporary WebSocket, authorises with the user's token, requests the
+// current account balance, then closes cleanly. Used when a token is saved or
+// mode switches to live so the bot balance syncs to the real Deriv balance.
+export async function fetchDerivBalance(token: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(WS_URL);
+    let done = false;
+
+    const finish = (err?: Error, balance?: number) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      if (err) reject(err);
+      else resolve(balance!);
+    };
+
+    const timer = setTimeout(() => finish(new Error("Deriv balance fetch timed out")), 15000);
+
+    ws.on("open", () => {
+      ws.send(JSON.stringify({ authorize: token }));
+    });
+
+    ws.on("message", (raw: Buffer) => {
+      let msg: any;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      if (msg.error) {
+        finish(new Error(msg.error.message ?? "Deriv auth error"));
+        return;
+      }
+
+      if (msg.msg_type === "authorize") {
+        ws.send(JSON.stringify({ balance: 1, account: "current" }));
+        return;
+      }
+
+      if (msg.msg_type === "balance") {
+        const bal = parseFloat(msg.balance?.balance ?? "0");
+        finish(undefined, Math.round(bal * 100) / 100);
+      }
+    });
+
+    ws.on("error", (err) => finish(err));
+    ws.on("close", () => { if (!done) finish(new Error("Connection closed unexpectedly")); });
+  });
+}
+
 // ── V10 Precision live contract placer ────────────────────────────────────────
 // Opens a fresh, dedicated WebSocket per trade (isolated from the shared market
 // data socket). Authorizes with the user's token, proposes a timed binary, buys

@@ -6,7 +6,7 @@ import {
 } from "@workspace/db";
 import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth.js";
-import { derivService } from "../services/deriv.js";
+import { derivService, fetchDerivBalance } from "../services/deriv.js";
 import { botManager } from "../services/bot.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { getCurrentSession, getNextSession, SESSIONS } from "../services/sessions.js";
@@ -282,7 +282,21 @@ router.post("/deriv/token", async (req, res) => {
     if (!token) { res.status(400).json({ error: "Token required" }); return; }
     const encrypted = encrypt(token);
     await db.update(usersTable).set({ derivTokenEncrypted: encrypted }).where(eq(usersTable.id, userId));
-    res.json({ message: "Deriv token saved", hasToken: true });
+
+    // Immediately fetch the real Deriv balance and sync it to the DB
+    try {
+      const derivBalance = await fetchDerivBalance(token);
+      await db.update(usersTable).set({
+        accountBalance: derivBalance,
+        peakBalance: derivBalance,
+        dailyStartBalance: derivBalance,
+      }).where(eq(usersTable.id, userId));
+      logger.info({ userId, derivBalance }, "Deriv balance synced on token save");
+      res.json({ message: "Deriv token saved", hasToken: true, derivBalance });
+    } catch (balErr) {
+      logger.warn({ balErr }, "Could not fetch Deriv balance on token save — token saved anyway");
+      res.json({ message: "Deriv token saved", hasToken: true, derivBalance: null });
+    }
   } catch (err) {
     logger.error({ err }, "Save Deriv token error");
     res.status(500).json({ error: "Server error" });
@@ -305,12 +319,58 @@ router.post("/trading-mode", async (req, res) => {
         res.status(400).json({ error: "Save your Deriv API token first via POST /api/user/deriv/token" });
         return;
       }
+      // Sync balance from Deriv when switching to live mode
+      try {
+        const rawToken = decrypt(users[0].tok);
+        const derivBalance = await fetchDerivBalance(rawToken);
+        await db.update(usersTable).set({
+          tradingMode: mode,
+          accountBalance: derivBalance,
+          peakBalance: derivBalance,
+          dailyStartBalance: derivBalance,
+        }).where(eq(usersTable.id, userId));
+        logger.info({ userId, derivBalance }, "Deriv balance synced on mode switch");
+        res.json({ tradingMode: mode, message: `Switched to ${mode} mode`, derivBalance });
+        return;
+      } catch (balErr) {
+        logger.warn({ balErr }, "Could not fetch Deriv balance on mode switch — proceeding without sync");
+      }
     }
     await db.update(usersTable).set({ tradingMode: mode }).where(eq(usersTable.id, userId));
     res.json({ tradingMode: mode, message: `Switched to ${mode} mode` });
   } catch (err) {
     logger.error({ err }, "Update trading mode error");
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Manual Deriv balance sync — fetch live balance from Deriv and update DB
+router.post("/deriv/sync-balance", async (req, res) => {
+  try {
+    const userId = req.user!.userId;
+    const users = await db.select({ tok: usersTable.derivTokenEncrypted, mode: usersTable.tradingMode })
+      .from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const u = users[0];
+    if (!u?.tok) {
+      res.status(400).json({ error: "No Deriv token saved. Connect your account first." });
+      return;
+    }
+    if (u.mode === "paper") {
+      res.status(400).json({ error: "Switch to live mode before syncing your Deriv balance." });
+      return;
+    }
+    const rawToken = decrypt(u.tok);
+    const derivBalance = await fetchDerivBalance(rawToken);
+    await db.update(usersTable).set({
+      accountBalance: derivBalance,
+      peakBalance: derivBalance,
+      dailyStartBalance: derivBalance,
+    }).where(eq(usersTable.id, userId));
+    logger.info({ userId, derivBalance }, "Manual Deriv balance sync");
+    res.json({ derivBalance, message: "Balance synced from Deriv" });
+  } catch (err: any) {
+    logger.error({ err }, "Deriv sync-balance error");
+    res.status(500).json({ error: err?.message ?? "Failed to fetch balance from Deriv" });
   }
 });
 
