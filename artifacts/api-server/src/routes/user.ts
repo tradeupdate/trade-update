@@ -481,14 +481,16 @@ router.get("/stream", async (req, res) => {
     if (user) botManager.getOrCreate(userId, user.tradingMode || "paper");
   } catch {}
 
-  // Tick broadcast — throttle to 1 per second, using the user's active pair
-  const activePair = user?.activePair || "R_75";
+  // Tick broadcast — throttle to 1 per second, reading activePair fresh from bot state each tick
+  // so pair switches take effect immediately without reconnecting SSE
+  if (user?.activePair) botManager.setActivePair(userId, user.activePair);
   let lastTickPrice = 0;
   const tickInterval = setInterval(() => {
     try {
-      const tick = derivService.getLatestTickForPair(activePair);
+      const currentPair = botManager.get(userId)?.activePair ?? user?.activePair ?? "R_75";
+      const tick = derivService.getLatestTickForPair(currentPair);
       const direction = tick.price >= lastTickPrice ? "up" : "down";
-      const payload = { price: tick.price, direction, time: tick.timestamp, pair: activePair };
+      const payload = { price: tick.price, direction, time: tick.timestamp, pair: currentPair };
       res.write(`data: ${JSON.stringify({ type: "tick", payload })}\n\n`);
       lastTickPrice = tick.price;
     } catch {}
@@ -710,6 +712,9 @@ router.patch("/settings/pair", async (req, res) => {
     if (openTrades.length > 0) { res.status(409).json({ error: "Cannot switch pair while a trade is open" }); return; }
 
     await db.update(usersTable).set({ activePair: pair }).where(eq(usersTable.id, userId));
+
+    // Update in-memory bot state so the SSE tick interval switches immediately
+    botManager.setActivePair(userId, pair);
 
     // Pause bot on pair switch
     const bot = botManager.getOrCreate(userId, "paper");

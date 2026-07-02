@@ -72,6 +72,8 @@ export interface BotState {
   hardStopped: boolean;
   microStakeRecoveryMode: boolean;
   profitLockHit: boolean;
+  // Active pair for price streaming
+  activePair: string;
 }
 
 interface OpenTrade {
@@ -1885,9 +1887,15 @@ class BotManager {
         v10PrecisionCooldownUntil: null,
         capitalPreservationMode: false, hardStopped: false, microStakeRecoveryMode: false,
         profitLockHit: false,
+        activePair: tradingMode === "paper" ? "R_75" : "R_75",
       });
     }
     return this.bots.get(userId)!;
+  }
+
+  setActivePair(userId: string, pair: string) {
+    const state = this.bots.get(userId);
+    if (state) state.activePair = pair;
   }
 
   start(userId: string) {
