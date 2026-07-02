@@ -6,7 +6,7 @@ import {
 } from "@workspace/db";
 import { eq, and, gte, lte, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
-import { derivService, placePrecisionLiveContract } from "./deriv.js";
+import { derivService, placePrecisionLiveContract, fetchDerivBalance } from "./deriv.js";
 import type { DerivContract, PrecisionSettlementResult } from "./deriv.js";
 import { decrypt } from "../lib/crypto.js";
 import { score, type ScoreResult } from "./scoring.js";
@@ -1046,6 +1046,9 @@ class BotManager {
         this.broadcastToUser(userId, "alert", { level: "info", message: "Recovery complete" });
       }
       await db.update(usersTable).set({ accountBalance: newBalance, peakBalance: newPeak }).where(eq(usersTable.id, userId));
+
+      // Async-confirm the balance from Deriv after writing the calculated value
+      this.syncDerivBalanceBackground(userId, user.derivTokenEncrypted, state);
     }
 
     const pnlStr = pnl >= 0 ? `+${pnl.toFixed(2)}` : `-${Math.abs(pnl).toFixed(2)}`;
@@ -1631,6 +1634,11 @@ class BotManager {
         peakBalance: newPeak,
       }).where(eq(usersTable.id, userId));
 
+      // Async-confirm the balance from Deriv after writing the calculated value
+      if (user.tradingMode !== "paper") {
+        this.syncDerivBalanceBackground(userId, user.derivTokenEncrypted, state);
+      }
+
       // Items 4+5: check capital preservation + hard stop after balance update
       const preservation = this.checkCapitalPreservation(newBalance, 16);
       state.capitalPreservationMode = preservation.active;
@@ -1643,6 +1651,37 @@ class BotManager {
     const closeReasonLabel = reason === "stop_loss" ? "Stop loss" : reason === "tp2" ? "Take profit" : reason === "time_stop" ? "Time stop" : reason;
     this.logActivity(userId, `Trade closed: ${closeReasonLabel} — ${pnlStr} — ${isWin ? "WIN" : "LOSS"}`, isWin ? "win" : "loss").catch(() => {});
     logger.info({ userId, tradeId: trade.id, pnl, reason }, "Trade closed");
+  }
+
+  // ── Post-settlement Deriv balance sync ───────────────────────────────────
+  // Fires asynchronously after a live trade settles. The calculated P&L is
+  // already written to DB — this overwrites it with the confirmed Deriv balance
+  // so the displayed number is always authoritative. Failures are silent (the
+  // calculated balance remains until the next sync).
+  private syncDerivBalanceBackground(
+    userId: string,
+    encryptedToken: string | null | undefined,
+    state: BotState,
+  ): void {
+    if (!encryptedToken) return;
+    let rawToken: string;
+    try { rawToken = decrypt(encryptedToken); } catch { return; }
+
+    fetchDerivBalance(rawToken)
+      .then(async (derivBalance) => {
+        const newPeak = Math.max(state.peakBalance || derivBalance, derivBalance);
+        await db.update(usersTable).set({
+          accountBalance: derivBalance,
+          peakBalance: newPeak,
+        }).where(eq(usersTable.id, userId));
+        state.peakBalance = newPeak;
+        state.currentDrawdown = newPeak > 0 ? (newPeak - derivBalance) / newPeak : 0;
+        this.broadcastBotEvent(userId, state);
+        logger.info({ userId, derivBalance }, "Post-settlement Deriv balance confirmed");
+      })
+      .catch((err) => {
+        logger.warn({ err, userId }, "Post-settlement Deriv balance sync failed — calculated balance retained");
+      });
   }
 
   addSseClient(userId: string, fn: (data: string) => void) {
