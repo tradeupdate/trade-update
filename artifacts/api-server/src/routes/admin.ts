@@ -115,7 +115,7 @@ router.post("/users", async (req, res) => {
       id, username, email, passwordHash, role: role || "user", status: "active",
       isActive: 1, tradingProfile: tradingProfile || "safe",
       tradingMode: tradingMode || "paper",
-      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
+      accountBalance: 0, peakBalance: 0, dailyStartBalance: 0,
       forcePasswordChange: 1, createdAt: now, approvedAt: now, approvedBy: req.user!.userId,
     });
 
@@ -202,7 +202,7 @@ router.post("/pending-signups/:id/approve", async (req, res) => {
       id: randomUUID(), username: s.username, email: s.email, country: s.country,
       passwordHash: s.passwordHash!, role: "user", status: "active", isActive: 1,
       tradingProfile: "safe", tradingMode: "paper",
-      accountBalance: 100, peakBalance: 100, dailyStartBalance: 100,
+      accountBalance: 0, peakBalance: 0, dailyStartBalance: 0,
       forcePasswordChange: 1, createdAt: now, approvedAt: now, approvedBy: req.user!.userId,
     });
 

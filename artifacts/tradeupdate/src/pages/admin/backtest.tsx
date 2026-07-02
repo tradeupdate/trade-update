@@ -80,6 +80,7 @@ export default function AdminBacktest() {
   const [sessionStartHour, setSessionStartHour] = useState(6);
   const [sessionEndHour, setSessionEndHour] = useState(20);
   const [scoreThresholdOverride, setScoreThresholdOverride] = useState<string>("");
+  const [startingBalance, setStartingBalance] = useState<string>("100");
   const [activeResult, setActiveResult] = useState<any>(null);
   const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
 
@@ -102,9 +103,10 @@ export default function AdminBacktest() {
     const to = dateTo ? Math.floor(new Date(dateTo).getTime() / 1000) : Math.floor(Date.now() / 1000);
 
     const thresholdNum = scoreThresholdOverride ? parseInt(scoreThresholdOverride) : undefined;
+    const balanceNum = startingBalance ? parseFloat(startingBalance) : 100;
 
     runMutation.mutate(
-      { data: { strategyId, dateFrom: from, dateTo: to, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour, scoreThresholdOverride: thresholdNum } as any },
+      { data: { strategyId, dateFrom: from, dateTo: to, refreshData, sessionFilterEnabled, sessionStartHour, sessionEndHour, scoreThresholdOverride: thresholdNum, startingBalance: balanceNum } as any },
       {
         onSuccess: (result) => {
           setActiveResult(result);
@@ -222,6 +224,18 @@ export default function AdminBacktest() {
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
                 />
+              </div>
+
+              {/* Starting balance */}
+              <div>
+                <label className="text-xs font-medium text-text-secondary mb-1.5 block uppercase tracking-wide">Starting Balance ($)</label>
+                <input
+                  type="number" min="1" step="any" placeholder="100"
+                  className="w-full h-10 px-3 rounded-md border border-border bg-background text-foreground text-sm"
+                  value={startingBalance}
+                  onChange={(e) => setStartingBalance(e.target.value)}
+                />
+                <p className="text-[10px] text-text-secondary mt-1">Simulated account size for this run.</p>
               </div>
 
               {/* Score threshold override */}
